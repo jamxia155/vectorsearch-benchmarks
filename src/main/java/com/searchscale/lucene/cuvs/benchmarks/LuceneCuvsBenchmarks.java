@@ -509,7 +509,7 @@ public class LuceneCuvsBenchmarks {
             () -> {
               try {
                 int currentQueryId;
-                while ((currentQueryId = queryId.getAndIncrement()) <= config.numQueriesToRun) {
+                while ((currentQueryId = queryId.getAndIncrement()) < config.numQueriesToRun) {
                   if (currentQueryId == config.numWarmUpQueries + 1) {
                     postWarmupStartTime.compareAndSet(0, System.nanoTime());
                   }
