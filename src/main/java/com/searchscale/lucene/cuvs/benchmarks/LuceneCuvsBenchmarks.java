@@ -38,8 +38,8 @@ import org.apache.lucene.codecs.Codec;
 import org.apache.lucene.codecs.KnnVectorsFormat;
 import org.apache.lucene.codecs.KnnVectorsReader;
 import org.apache.lucene.codecs.KnnVectorsWriter;
-import org.apache.lucene.codecs.lucene101.Lucene101Codec;
-import org.apache.lucene.codecs.lucene101.Lucene101Codec.Mode;
+import org.apache.lucene.codecs.lucene103.Lucene103Codec;
+import org.apache.lucene.codecs.lucene103.Lucene103Codec.Mode;
 import org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsFormat;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
@@ -678,8 +678,8 @@ public class LuceneCuvsBenchmarks {
 
   private static Codec getCodec(BenchmarkConfiguration config) throws Exception {
     if (config.algoToRun.equals(Codex.LUCENE_HNSW)) {
-      log.info("<<< Using Lucene101Codec >>>");
-      return new Lucene101Codec(Mode.BEST_SPEED) {
+      log.info("<<< Using Lucene103Codec >>>");
+      return new Lucene103Codec(Mode.BEST_SPEED) {
         @Override
         public KnnVectorsFormat getKnnVectorsFormatForField(String field) {
           KnnVectorsFormat knnFormat;
