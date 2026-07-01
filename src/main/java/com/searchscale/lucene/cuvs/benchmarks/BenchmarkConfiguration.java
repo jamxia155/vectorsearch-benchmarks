@@ -50,6 +50,7 @@ public class BenchmarkConfiguration {
   public int cagraITopK;
   public int cagraSearchWidth;
   public int cagraThreadBlockSize; // 0 = auto; valid: 64, 128, 256, 512, 1024
+  public int cagraMaxIterations; // 0 = auto
   public long cuvsWorkspacePoolSize =
       0; // initial workspace pool reservation per query thread in bytes (0 = disabled); pool grows
   // beyond this if needed
@@ -149,6 +150,7 @@ public class BenchmarkConfiguration {
       sb.append("cagraITopK: ").append(cagraITopK).append('\n');
       sb.append("cagraSearchWidth: ").append(cagraSearchWidth).append('\n');
       sb.append("cagraThreadBlockSize: ").append(cagraThreadBlockSize).append('\n');
+      sb.append("cagraMaxIterations: ").append(cagraMaxIterations).append('\n');
       sb.append("cuvsWorkspacePoolSize: ").append(cuvsWorkspacePoolSize).append('\n');
       sb.append("cagraSearchAlgo: ").append(cagraSearchAlgo).append('\n');
       sb.append("cagraHnswLayers: ").append(cagraHnswLayers).append('\n');
