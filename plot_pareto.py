@@ -215,6 +215,19 @@ def create_plot_search(
 def create_plot_build(
     build_results, search_results, linestyles, fn_out, dataset, k, n_queries
 ):
+    import re
+
+    def resolve_build_key(algo_name, index_name):
+        """Match search runs to build runs (build index names omit query-thread suffix)."""
+        candidates = [
+            (algo_name, index_name),
+            (algo_name, re.sub(r"-qt\d+$", "", index_name)),
+        ]
+        for key in candidates:
+            if key in build_results:
+                return key
+        return None
+
     bt_80 = [0] * len(linestyles)
     bt_90 = [0] * len(linestyles)
     bt_95 = [0] * len(linestyles)
@@ -237,8 +250,8 @@ def create_plot_build(
 
         len_80, len_90, len_95, len_99 = 0, 0, 0, 0
         for i in range(len(xs)):
-            build_key = (ls[i], idxs[i])
-            if build_key not in build_results:
+            build_key = resolve_build_key(ls[i], idxs[i])
+            if build_key is None:
                 continue  # Skip if build result not found
             
             if xs[i] >= 0.80 and xs[i] < 0.90:
@@ -279,6 +292,9 @@ def create_plot_build(
     df = pd.DataFrame(data, index=index)
     df.replace(0.0, np.nan, inplace=True)
     df = df.dropna(how="all")
+    if df.empty:
+        print(f"Skipping build plot (no build/search index matches): {fn_out}")
+        return
     plt.figure(figsize=(12, 9))
     ax = df.plot.bar(rot=0, color=colors)
     fig = ax.get_figure()

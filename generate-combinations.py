@@ -28,6 +28,10 @@ datasets = json.load(open(args.datasets))
 # All other variant parameters are treated as build-only, so the index is
 # shared across every search-param combination that belongs to the same
 # build-param combination.
+#
+# CuVS IVF-PQ params (index + search + refinement) are NOT listed here:
+# for CAGRA graph build algorithms (IVF_PQ), they are consumed when the
+# CAGRA graph is constructed, not at HNSW/CAGRA query time.
 SEARCH_ONLY_PARAMS = {
     'efSearch',
     'cagraITopK',
@@ -38,11 +42,6 @@ SEARCH_ONLY_PARAMS = {
     'queryThreads',
     'numQueriesToRun',
     'numWarmUpQueries',
-    'cuVSIvfPqParamsRefinementRate',
-    'cuVSIvfPqSearchParamsNProbes',
-    'cuVSIvfPqSearchParamsInternalDistanceDtype',
-    'cuVSIvfPqSearchParamsLutDtype',
-    'cuVSIvfPqSearchParamsPreferredShmemCarveout',
     'filterRejectRate',
 }
 
@@ -134,10 +133,14 @@ for sweep in sweeps:
                     config['cleanIndexDirectory'] = (search_idx == len(search_combinations) - 1)
 
                     # Point all configs in this build group at the same index directory.
+                    index_dir = f"cuvsIndex-{base_hash}"
                     if 'hnswIndexDirPath' in config:
                         config['hnswIndexDirPath'] = f"hnswIndex-{base_hash}"
                     if 'cuvsIndexDirPath' in config:
-                        config['cuvsIndexDirPath'] = f"cuvsIndex-{base_hash}"
+                        config['cuvsIndexDirPath'] = index_dir
+                    # LuceneCuvsBenchmarks reads indexDirPath (not cuvsIndexDirPath).
+                    if 'indexDirPath' in config:
+                        config['indexDirPath'] = index_dir
 
                     filename = f"{algo}-{hash_id}.json"
                     sweep_dir = f"{args.configs_dir}/{sweep}"

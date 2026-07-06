@@ -1,0 +1,42 @@
+{
+  "wiki1m_cagra_ivfpq_full": {
+    "dataset": "wiki_all_1M",
+    "common-params": {
+      "numDocs": 1000000,
+      "numQueriesToRun": 10000,
+      "numWarmUpQueries": 5000,
+      "flushFreq": 10000000,
+      "topK": 100,
+      "efSearch": [50, 100, 120, 150, 200, 400, 600, 800],
+      "queryThreads": [1, 8, 64],
+      "vectorColName": "vector",
+      "createIndexInMemory": false,
+      "cleanIndexDirectory": true,
+      "saveResultsOnDisk": true,
+      "forceMerge": 0,
+      "enableTieredMerge": true,
+      "enableIndexWriterInfoStream": false,
+      "cuvsWorkspacePoolSize": 4194304,
+      "filterRejectRate": 0.0
+    },
+    "algorithms": {
+      "CAGRA_HNSW": {
+        "indexDirPath": "cuvsIndex",
+        "cagraGraphBuildAlgo": "IVF_PQ",
+        "cagraGraphDegree": [16, 32, 64, 128],
+        "cagraIntermediateGraphDegree": [64, 128, 256, 512],
+        "cagraHnswLayers": 1,
+        "cuvsWriterThreads": 4,
+        "numIndexThreads": 4,
+        "hnswMaxConn": [32, 64],
+        "hnswBeamWidth": [128, 256],
+        "cuVSIvfPqIndexParamsNLists": 512,
+        "cuVSIvfPqIndexParamsPqDim": [0, 128],
+        "cuVSIvfPqIndexParamsPqBits": [4, 8],
+        "cuVSIvfPqIndexParamsKmeansNIters": 10,
+        "cuVSIvfPqSearchParamsNProbes": [10, 20, 50],
+        "cuVSIvfPqParamsRefinementRate": 1
+      }
+    }
+  }
+}

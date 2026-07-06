@@ -1,0 +1,38 @@
+{
+  "wiki1m_cagra_search_grid": {
+    "dataset": "wiki_all_1M",
+    "common-params": {
+      "numDocs": 1000000,
+      "numQueriesToRun": 10000,
+      "numWarmUpQueries": 5000,
+      "flushFreq": 10000000,
+      "topK": 100,
+      "efSearch": [50, 100, 150],
+      "queryThreads": [1, 8, 64],
+      "vectorColName": "vector",
+      "createIndexInMemory": false,
+      "cleanIndexDirectory": true,
+      "saveResultsOnDisk": true,
+      "forceMerge": 0,
+      "enableTieredMerge": true,
+      "enableIndexWriterInfoStream": false,
+      "cuvsWorkspacePoolSize": 4194304,
+      "filterRejectRate": 0.0
+    },
+    "algorithms": {
+      "CAGRA_SEARCH": {
+        "indexDirPath": "cuvsIndex",
+        "cagraGraphDegree": [16, 32, 64, 128],
+        "cagraIntermediateGraphDegree": [32, 64, 128, 256, 512],
+        "cagraHnswLayers": [1],
+        "cagraGraphBuildAlgo": "NN_DESCENT",
+        "cuvsWriterThreads": 32,
+        "numIndexThreads": 32,
+        "cagraITopK": 15,
+        "cagraSearchWidth": [4, 16, 128],
+        "cagraSearchAlgo": "SINGLE_CTA",
+        "cagraThreadBlockSize": [0]
+      }
+    }
+  }
+}

@@ -3,8 +3,11 @@
     "wiki_all_1M": {
       "description": "Wikipedia 768-dimensions, 1M vectors",
       "base_file": "base.1M.fbin",
+      "base_checksum": "b1e81f8cdcf940688ad0131948b890c1cc8029cccb1b7fec5cfb57a7091ed382",
       "query_file": "queries.fbin",
+      "query_checksum": "57c88c301a6ba032855af3a54bdb847a972004e1ab671ce1bff790ee9c39c855",
       "ground_truth_file": "groundtruth.1M.neighbors.ibin",
+      "ground_truth_checksum": "44bb3fdc24c76b150f3b44fb9df707cd2b610d2a044e10388f96ae0b3e074f95",
       "num_docs": 1000000,
       "vector_dimension": 768,
       "top_k_ground_truth": 100

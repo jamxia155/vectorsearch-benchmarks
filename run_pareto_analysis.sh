@@ -25,76 +25,26 @@ echo "Processing sweep: ${SWEEP_ID}, dataset: ${DATASET_NAME}"
 
 rm -rf "${INTERMEDIATE_DIR}" "${OUTPUT_DIR}/plots"
 
-echo "Converting results to NVIDIA format..."
-python3 convert_to_nvidia_format.py --sweep-dir "${INPUT_DIR}/${DATASET_NAME}" --output-dir "${INTERMEDIATE_DIR}" --dataset "${DATASET_NAME}"
-
-echo "Generating Pareto frontier CSVs..."
-python3 -c "
-import sys
-sys.path.append('.')
-from data_export import convert_json_to_csv_search, convert_json_to_csv_build
-convert_json_to_csv_search('${DATASET_NAME}', '${INTERMEDIATE_DIR}')
-convert_json_to_csv_build('${DATASET_NAME}', '${INTERMEDIATE_DIR}')
-"
-
-if [ $? -ne 0 ]; then
-    echo "Error: NVIDIA data_export.py failed. Exiting."
-    exit 1
-fi
-
-FIRST_RESULTS=$(find "${INPUT_DIR}" -name "results.json" | head -1)
+FIRST_RESULTS=$(find "${INPUT_DIR}/${DATASET_NAME}" -name "results.json" | head -1)
 K=$(python3 -c "import json; print(json.load(open('${FIRST_RESULTS}'))['configuration']['topK'])")
 N_QUERIES=$(python3 -c "import json; print(json.load(open('${FIRST_RESULTS}'))['configuration']['numQueriesToRun'])")
 
-echo "Creating directory structure for plotting..."
-mkdir -p "${INTERMEDIATE_DIR}/${DATASET_NAME}/result/search"
-mkdir -p "${INTERMEDIATE_DIR}/${DATASET_NAME}/result/build"
-
-if [ -d "${INTERMEDIATE_DIR}/${DATASET_NAME}" ]; then
-    cd "${INTERMEDIATE_DIR}/${DATASET_NAME}"
-
-    for file in *throughput.csv *latency.csv *raw.csv; do
-        if [ -f "$file" ]; then
-            if [[ "$file" == *",raw.csv" ]]; then
-                mv "$file" "result/search/${file%,raw.csv},k${K},bs${N_QUERIES},raw.csv"
-            elif [[ "$file" == *",throughput.csv" ]]; then
-                mv "$file" "result/search/${file%,throughput.csv},k${K},bs${N_QUERIES},throughput.csv"
-            elif [[ "$file" == *",latency.csv" ]]; then
-                mv "$file" "result/search/${file%,latency.csv},k${K},bs${N_QUERIES},latency.csv"
-            fi
-        fi
-    done
-
-    for file in *.csv; do
-        if [ -f "$file" ]; then
-            mv "$file" "result/build/"
-        fi
-    done
-
-    cd - > /dev/null
-fi
+echo "Exporting full-parameter CSVs from results.json..."
+python3 export_results_csv.py \
+    --sweep-dir "${INPUT_DIR}/${DATASET_NAME}" \
+    --output-dir "${INTERMEDIATE_DIR}" \
+    --dataset "${DATASET_NAME}"
 
 echo "Generating is_pareto files for Pareto optimal runs..."
 python3 -c "
 import os
+import sys
 import csv
 import json
 import glob
 
-def create_index_name_from_config(config):
-    algorithm = config.get('algoToRun', 'UNKNOWN')
-    ef_search = config.get('efSearch', 0)
-
-    if algorithm in ['LUCENE_HNSW', 'hnsw']:
-        beam_width = config.get('hnswBeamWidth', 0)
-        max_conn = config.get('hnswMaxConn', 0)
-        return f'beam{beam_width}-conn{max_conn}-ef{ef_search}'
-    elif algorithm in ['CAGRA_HNSW', 'cagra_hnsw']:
-        graph_degree = config.get('cagraGraphDegree', 0)
-        intermediate_degree = config.get('cagraIntermediateGraphDegree', 0)
-        return f'ef{ef_search}-deg{graph_degree}-ideg{intermediate_degree}'
-    else:
-        return f'ef{ef_search}'
+sys.path.append('.')
+from export_results_csv import create_index_name as create_index_name_from_config
 
 intermediate_dir = '${INTERMEDIATE_DIR}/${DATASET_NAME}'
 results_dir = '${RESULTS_DIR}/${SWEEP_ID}/${DATASET_NAME}'
@@ -153,11 +103,7 @@ for algorithm, pareto_indices in pareto_runs_by_algo.items():
                 config = results_data['configuration']
                 algo_to_run = config.get('algoToRun')
 
-                algorithm_match = False
-                if algorithm == 'CAGRA_HNSW' and algo_to_run in ['CAGRA_HNSW', 'cagra_hnsw']:
-                    algorithm_match = True
-                elif algorithm == 'LUCENE_HNSW' and algo_to_run in ['LUCENE_HNSW', 'hnsw']:
-                    algorithm_match = True
+                algorithm_match = algo_to_run == algorithm
 
                 if algorithm_match:
                     index_name = create_index_name_from_config(config)
@@ -210,6 +156,14 @@ echo "Plots: ${OUTPUT_DIR}/plots/"
 ls -la "${OUTPUT_DIR}/plots"/*.png
 
 echo ""
+echo "Exporting CSVs to csv-export..."
+CSV_EXPORT_DIR="${INPUT_DIR}/csv-export/${DATASET_NAME}"
+rm -rf "${CSV_EXPORT_DIR}"
+mkdir -p "${CSV_EXPORT_DIR}"
+find "${INTERMEDIATE_DIR}/${DATASET_NAME}" -maxdepth 1 -name '*.csv' -exec cp -t "${CSV_EXPORT_DIR}" {} +
+echo "CSVs saved to: ${CSV_EXPORT_DIR}/"
+ls -la "${CSV_EXPORT_DIR}/"
+
 echo "Cleaning up intermediate files..."
 rm -rf "${INTERMEDIATE_DIR}"
 echo "Intermediate files cleaned up!"
@@ -217,4 +171,4 @@ echo ""
 echo "Final output:"
 echo "- Pareto optimal runs marked with is_pareto files"
 echo "- Plots: ${OUTPUT_DIR}/plots/"
-echo "- No intermediate files (completely cleaned up)"
+echo "- CSV export: ${CSV_EXPORT_DIR}/"

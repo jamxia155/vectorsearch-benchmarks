@@ -21,6 +21,31 @@ I am mentioning the versions below that I use on `ubuntu-24.04`
 - ninja and nccl (used while building cuVS)
 - nvtop
 
+### Python (Pareto CSV export and plots)
+
+After a sweep, `run_sweep.sh` calls `run_pareto_analysis.sh`, which needs:
+
+- Python 3.7+
+- **pandas** — `data_export.py` (build/search CSVs, Pareto frontiers)
+- **matplotlib**, **numpy**, **click** — `plot_pareto.py` (throughput/latency plots)
+- **pyyaml** — optional helpers elsewhere in the repo
+
+Install once:
+
+```sh
+pip install pandas matplotlib numpy click pyyaml
+```
+
+Re-run analysis only (no re-benchmark) after a completed sweep:
+
+```sh
+cd vectorsearch-benchmarks
+./run_pareto_analysis.sh <benchmark-id> <dataset-folder-name>
+# Example: ./run_pareto_analysis.sh wOKdmU wiki1m
+```
+
+Plots land under `results/<benchmark-id>/<dataset>/plots/`. Full-parameter CSVs (raw + Pareto frontiers) are written to `results/<benchmark-id>/csv-export/<dataset>/` via `export_results_csv.py` (all sweep fields from each `results.json`).
+
 You can get the above using the following:
 ```sh
 sudo apt install -y axel ninja-build libnccl2 libnccl-dev nvtop
@@ -102,7 +127,7 @@ Run sweeps as below (modify according to your local setup):
 
 ```sh
 cd vectorsearch-benchmarks
-CUDA_DEVICE_MAX_CONNECTIONS=<1 to 32, default 8; should size according to `queryThreads` in sweep config> ./run_sweep.sh --data-dir ../data --datasets datasets_test_1M.json --sweeps sweeps_test_1M.json --configs-dir configs --results-dir results --run-benchmarks
+CUDA_DEVICE_MAX_CONNECTIONS=<1 to 32, default 8; should size according to `queryThreads` in sweep config> ./run_sweep.sh --data-dir ../data --datasets datasets_test_1M.json --sweeps sweeps/test_1M.json --configs-dir configs --results-dir results --run-benchmarks
 ```
 
 If needed, ensure files in data/wiki_all_1M are named as follows:

@@ -20,6 +20,15 @@ def create_index_name(config: Dict) -> str:
         graph_degree = config.get('cagraGraphDegree', 0)
         intermediate_degree = config.get('cagraIntermediateGraphDegree', 0)
         return f"ef{ef_search}-deg{graph_degree}-ideg{intermediate_degree}"
+    elif algorithm in ['CAGRA_SEARCH', 'cagra_search']:
+        graph_degree = config.get('cagraGraphDegree', 0)
+        intermediate_degree = config.get('cagraIntermediateGraphDegree', 0)
+        search_width = config.get('cagraSearchWidth', 0)
+        query_threads = config.get('queryThreads', 0)
+        return (
+            f"ef{ef_search}-sw{search_width}-deg{graph_degree}-"
+            f"ideg{intermediate_degree}-qt{query_threads}"
+        )
     else:
         return f"ef{ef_search}"
 
@@ -51,7 +60,11 @@ def convert_results_to_nvidia_format(results_json_path: str, output_dir: str, da
         raise KeyError("No mean-latency metric found")
 
     latency_ms = float(metrics[latency_key])
-    throughput = 1000.0 / latency_ms if latency_ms > 0 else 0
+    throughput_key = next((key for key in metrics.keys() if 'query-throughput' in key.lower()), None)
+    if throughput_key:
+        throughput = float(metrics[throughput_key])
+    else:
+        throughput = 1000.0 / latency_ms if latency_ms > 0 else 0
 
     benchmark = {
         "name": f"{algorithm}/{index_name}",

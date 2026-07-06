@@ -2,6 +2,7 @@ package com.searchscale.lucene.cuvs.benchmarks;
 
 import static org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN;
 
+import com.nvidia.cuvs.CagraIndexParams.CagraGraphBuildAlgo;
 import com.nvidia.cuvs.CuVSIvfPqIndexParams;
 import com.nvidia.cuvs.CuVSIvfPqParams;
 import com.nvidia.cuvs.CuVSIvfPqSearchParams;
@@ -731,7 +732,7 @@ public class LuceneCuvsBenchmarks {
               .withRefinementRate(config.cuVSIvfPqParamsRefinementRate)
               .build();
 
-      AcceleratedHNSWParams params =
+      AcceleratedHNSWParams.Builder acceleratedHnswBuilder =
           new AcceleratedHNSWParams.Builder()
               .withWriterThreads(config.cuvsWriterThreads)
               .withIntermediateGraphDegree(config.cagraIntermediateGraphDegree)
@@ -740,22 +741,29 @@ public class LuceneCuvsBenchmarks {
               .withMaxConn(config.hnswMaxConn)
               .withBeamWidth(config.hnswBeamWidth)
               .withCagraGraphBuildAlgo(config.cagraGraphBuildAlgo)
-              .withCuVSIvfPqParams(cip)
-              .build();
+              .withCuVSIvfPqParams(cip);
+      if (config.cagraGraphBuildAlgo == CagraGraphBuildAlgo.IVF_PQ) {
+        acceleratedHnswBuilder.withStrategy(AcceleratedHNSWParams.Strategy.CUSTOM);
+      }
+      AcceleratedHNSWParams params = acceleratedHnswBuilder.build();
 
       if (config.algoToRun.equals(Codex.CAGRA_HNSW)) {
         log.info("<<< Using Lucene101AcceleratedHNSWCodec >>>");
         return new Lucene101AcceleratedHNSWCodec(params);
       } else if (config.algoToRun.equals(Codex.CAGRA_SEARCH)) {
         log.info("<<< Using CuVS2510GPUSearchCodec >>>");
-        GPUSearchParams gpuParams =
+        GPUSearchParams.Builder gpuSearchBuilder =
             new GPUSearchParams.Builder()
                 .withCagraGraphBuildAlgo(config.cagraGraphBuildAlgo)
                 .withWriterThreads(config.cuvsWriterThreads)
                 .withIntermediateGraphDegree(config.cagraIntermediateGraphDegree)
-                .withGraphDegree(config.cagraGraphDegree)
-                .build();
-        return new CuVS2510GPUSearchCodec(gpuParams);
+                .withGraphDegree(config.cagraGraphDegree);
+        if (config.cagraGraphBuildAlgo == CagraGraphBuildAlgo.IVF_PQ) {
+          gpuSearchBuilder
+              .withStrategy(GPUSearchParams.Strategy.CUSTOM)
+              .withCuVSIvfPqParams(cip);
+        }
+        return new CuVS2510GPUSearchCodec(gpuSearchBuilder.build());
       } else if (config.algoToRun.equals(Codex.CAGRA_HNSW_BINARY)) {
         log.info("<<< Using LuceneAcceleratedHNSWBinaryQuantizedCodec >>>");
         return new LuceneAcceleratedHNSWBinaryQuantizedCodec(params);

@@ -1,0 +1,46 @@
+{
+  "ads10m_cagra_ivfpq": {
+    "dataset": "ads_sourcing-10m",
+    "common-params": {
+      "numDocs": 10000000,
+      "numQueriesToRun": 10000,
+      "numWarmUpQueries": 5000,
+      "flushFreq": 10000000,
+      "topK": 1500,
+      "efSearch": [1500, 2000, 2500, 3000, 4000],
+      "queryThreads": [64],
+      "vectorColName": "vector",
+      "createIndexInMemory": false,
+      "cleanIndexDirectory": true,
+      "saveResultsOnDisk": true,
+      "forceMerge": 1,
+      "enableTieredMerge": true,
+      "enableIndexWriterInfoStream": false,
+      "cuvsWorkspacePoolSize": 4194304,
+      "filterRejectRate": 0.0
+    },
+    "algorithms": {
+      "CAGRA_HNSW": {
+        "indexDirPath": "cuvsIndex",
+        "cagraGraphBuildAlgo": "IVF_PQ",
+        "cagraGraphDegree": [64, 128],
+        "cagraIntermediateGraphDegree": [128, 256],
+        "cagraHnswLayers": 1,
+        "cuvsWriterThreads": 4,
+        "numIndexThreads": 4,
+        "hnswMaxConn": 64,
+        "hnswBeamWidth": 128,
+        "cuVSIvfPqIndexParamsNLists": 5000,
+        "cuVSIvfPqIndexParamsPqDim": [32, 64],
+        "cuVSIvfPqIndexParamsPqBits": [4],
+        "cuVSIvfPqIndexParamsKmeansNIters": 10,
+        "cuVSIvfPqIndexParamsKmeansTrainsetFraction": 0.1,
+        "cuVSIvfPqIndexParamsConservativeMemoryAllocation": true,
+        "cuVSIvfPqSearchParamsNProbes": [10, 20],
+        "cuVSIvfPqSearchParamsLutDtype": "CUDA_R_16F",
+        "cuVSIvfPqSearchParamsInternalDistanceDtype": "CUDA_R_16F",
+        "cuVSIvfPqParamsRefinementRate": 1
+      }
+    }
+  }
+}

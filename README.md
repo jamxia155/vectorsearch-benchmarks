@@ -7,8 +7,19 @@ Benchmark system for comparing CAGRA (GPU) vs Lucene HNSW (CPU) vector search al
 1. **Prerequisites:**
    - JDK 22+
    - CUDA libraries
-   - Python 3.7+
-   - pip install pyyaml matplotlib numpy click pandas
+   - Python 3.7+ with packages for post-run analysis and plots (required if you use `--run-benchmarks`, which triggers Pareto export/plotting):
+
+   ```bash
+   pip install pandas matplotlib numpy click pyyaml
+   ```
+
+   | Package | Used for |
+   |---------|----------|
+   | `pandas` | `data_export.py` — build/search CSVs and Pareto frontiers |
+   | `matplotlib`, `numpy`, `click` | `plot_pareto.py` — throughput/latency plots |
+   | `pyyaml` | YAML utilities in supporting scripts |
+
+   See also [BenchmarkWithCAGRASearchPrototype.md](BenchmarkWithCAGRASearchPrototype.md) for the full CAGRA prototype setup.
 
 2. **Set library paths:**
    ```bash

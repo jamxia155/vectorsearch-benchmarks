@@ -1,0 +1,31 @@
+{
+  "ads10m_lucene_hnsw": {
+    "dataset": "ads_sourcing-10m",
+    "common-params": {
+      "numDocs": 10000000,
+      "numQueriesToRun": 10000,
+      "numWarmUpQueries": 5000,
+      "flushFreq": 10000000,
+      "topK": 1500,
+      "efSearch": [1500, 2000, 2500, 3000, 4000],
+      "queryThreads": [64],
+      "vectorColName": "vector",
+      "createIndexInMemory": false,
+      "cleanIndexDirectory": true,
+      "saveResultsOnDisk": true,
+      "forceMerge": 1,
+      "enableTieredMerge": true,
+      "enableIndexWriterInfoStream": false,
+      "filterRejectRate": 0.0
+    },
+    "algorithms": {
+      "LUCENE_HNSW": {
+        "indexDirPath": "hnswIndex",
+        "hnswMaxConn": [32, 64],
+        "hnswBeamWidth": 128,
+        "hnswMergeThreads": 32,
+        "numIndexThreads": 32
+      }
+    }
+  }
+}
