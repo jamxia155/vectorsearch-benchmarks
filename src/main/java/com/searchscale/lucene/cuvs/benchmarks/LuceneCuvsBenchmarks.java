@@ -229,6 +229,12 @@ public class LuceneCuvsBenchmarks {
             "Time taken to load {} vectors in-memory: {} ms",
             loadedVectors.size(),
             (System.currentTimeMillis() - start));
+      } else if (ChunkedVectorProvider.supports(config.datasetFile)) {
+        log.info(
+            "Creating chunked sequential vector provider ({} MB chunks)", config.ingestChunkSizeMB);
+        vectorProvider =
+            new ChunkedVectorProvider(
+                config.datasetFile, config.numDocs, config.ingestChunkSizeMB);
       } else {
         log.info("Creating streaming vector provider (loadVectorsInMemory is disabled)");
         vectorProvider = new StreamingVectorProvider(config.datasetFile, config.numDocs);

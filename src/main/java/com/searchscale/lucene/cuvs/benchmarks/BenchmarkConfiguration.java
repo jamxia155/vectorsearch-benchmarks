@@ -32,6 +32,8 @@ public class BenchmarkConfiguration {
   public String groundTruthFile;
   public String indexDirPath;
   public boolean loadVectorsInMemory;
+  // Chunk size (MB) for the sequential ChunkedVectorProvider used when loadVectorsInMemory=false.
+  public int ingestChunkSizeMB = 64;
   public boolean skipIndexing;
   public int forceMerge;
   public boolean enableTieredMerge;
@@ -157,6 +159,7 @@ public class BenchmarkConfiguration {
     sb.append("Ground Truth file used is: ").append(groundTruthFile).append('\n');
     sb.append("index directory path is: ").append(indexDirPath).append('\n');
     sb.append("Load vectors in memory before indexing: ").append(loadVectorsInMemory).append('\n');
+    sb.append("Ingest chunk size (MB): ").append(ingestChunkSizeMB).append('\n');
     sb.append("Skip indexing (and use existing index for search): ")
         .append(skipIndexing)
         .append('\n');
