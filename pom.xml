@@ -146,7 +146,7 @@
                         <goals>
                             <goal>apply</goal>
                         </goals>
-                        <phase>validate</phase>
+                        <phase>none</phase>
                     </execution>
                 </executions>
                 <configuration>

@@ -274,9 +274,9 @@ public class LuceneCuvsBenchmarks {
         vectorProvider = new MapDBVectorProvider(vectors, db);
       }
     }
-    log.info(
-        "Time taken for parsing/loading dataset is {} ms",
-        (System.currentTimeMillis() - parseStartTime));
+    long parseElapsedMs = System.currentTimeMillis() - parseStartTime;
+    log.info("Time taken for parsing/loading dataset is {} ms", parseElapsedMs);
+    StageTimers.record("dataset-load [DISK]", parseElapsedMs * 1_000_000L);
 
     try {
       // [2] Benchmarking setup
@@ -500,6 +500,7 @@ public class LuceneCuvsBenchmarks {
         writer.getConfig().getRAMBufferSizeMB());
     final int numDocsToIndex = Math.min(config.numDocs, vectorProvider.size());
 
+    long ingestStart = StageTimers.start();
     for (int i = 0; i < threads; i++) {
       pool.submit(
           () -> {
@@ -537,15 +538,23 @@ public class LuceneCuvsBenchmarks {
     }
     pool.shutdown();
     pool.awaitTermination(Long.MAX_VALUE, TimeUnit.SECONDS);
+    long ingestBytes = (long) numDocsToIndex * config.vectorDimension * Float.BYTES;
+    StageTimers.stop("ingest [DISK+CPU]", ingestStart, ingestBytes);
 
     if (config.forceMerge > 0) {
       log.info("Force merge is enabled, force merging into " + config.forceMerge + " segments");
+      long forceMergeStart = StageTimers.start();
       writer.forceMerge(config.forceMerge);
+      StageTimers.stop("force-merge [GPU+CPU+DISK]", forceMergeStart);
     }
 
     log.info("Calling commit.");
+    long commitStart = StageTimers.start();
     writer.commit();
+    StageTimers.stop("commit [DISK; flush + GPU build + fsync]", commitStart);
+    long closeStart = StageTimers.start();
     writer.close();
+    StageTimers.stop("close [DISK; finalize]", closeStart);
   }
 
   /**

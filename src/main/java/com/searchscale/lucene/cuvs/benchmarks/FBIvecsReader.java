@@ -194,18 +194,29 @@ public class FBIvecsReader {
 
       float[] row = new float[dimension];
       int count = 0;
+      // Split raw sequential read (DISK) from float[] materialization (CPU) so we can see how
+      // much of dataset-load is actually disk I/O vs per-vector parse/allocate overhead.
+      long rawReadNanos = 0;
+      long materializeNanos = 0;
 
       while (is.available() != 0) {
+        long tRead = System.nanoTime();
         byte[] vectorBytes = is.readNBytes(dimension * 4);
+        rawReadNanos += System.nanoTime() - tRead;
         if (vectorBytes.length != dimension * 4) break;
+        long tMat = System.nanoTime();
         ByteBuffer bb = ByteBuffer.wrap(vectorBytes).order(ByteOrder.LITTLE_ENDIAN);
         for (int i = 0; i < dimension; i++) row[i] = bb.getFloat();
         vectors.add(row.clone());
+        materializeNanos += System.nanoTime() - tMat;
         count++;
         if (numRows != -1 && count == numRows) break;
         if (count % 1000 == 0) System.out.print(".");
       }
       System.out.println();
+      StageTimers.record(
+          "dataset-read-raw [DISK]", rawReadNanos, (long) count * dimension * Float.BYTES);
+      StageTimers.record("dataset-materialize [CPU]", materializeNanos);
       log.info("Reading complete. Read {} vectors out of {} in file.", count, numVectors);
     } catch (Exception e) {
       log.error("Error reading fbin file", e);
