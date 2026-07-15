@@ -291,7 +291,8 @@ public class LuceneCuvsBenchmarks {
 
         // HNSW Writer:
         IndexWriterConfig indexWriterConfig = new IndexWriterConfig(new StandardAnalyzer());
-        indexWriterConfig.setCodec(getCodec(config));
+        int numVectorsToIndex = Math.min(config.numDocs, vectorProvider.size());
+        indexWriterConfig.setCodec(getCodec(config, numVectorsToIndex));
         indexWriterConfig.setMaxBufferedDocs(config.flushFreq);
         indexWriterConfig.setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH);
 
@@ -801,7 +802,8 @@ public class LuceneCuvsBenchmarks {
     }
   }
 
-  private static Codec getCodec(BenchmarkConfiguration config) throws Exception {
+  private static Codec getCodec(BenchmarkConfiguration config, int numVectorsToIndex)
+      throws Exception {
     if (config.algoToRun.equals(Codex.LUCENE_HNSW)) {
       log.info("<<< Using Lucene101Codec >>>");
       return new Lucene101Codec(Mode.BEST_SPEED) {
@@ -833,7 +835,7 @@ public class LuceneCuvsBenchmarks {
       // The following BenchmarkConfiguration fields become dead in this mode:
       //   cuVSIvfPqIndexParams*, cuVSIvfPqSearchParams*, cuVSIvfPqParamsRefinementRate,
       //   cagraGraphBuildAlgo
-      AcceleratedHNSWParams params =
+      AcceleratedHNSWParams.Builder paramsBuilder =
           new AcceleratedHNSWParams.Builder()
               .withStrategy(AcceleratedHNSWParams.Strategy.HEURISTIC)
               .withWriterThreads(config.cuvsWriterThreads)
@@ -841,8 +843,25 @@ public class LuceneCuvsBenchmarks {
               .withGraphDegree(config.cagraGraphDegree)
               .withHNSWLayer(config.cagraHnswLayers)
               .withMaxConn(config.hnswMaxConn)
-              .withBeamWidth(config.hnswBeamWidth)
-              .build();
+              .withBeamWidth(config.hnswBeamWidth);
+
+      // Native flat buffering is only wired for the CAGRA_HNSW writer and needs the whole dataset in
+      // one segment (the native host matrix is sized for the exact count). Fail fast on a
+      // multi-segment config rather than deep inside the writer.
+      if (config.cuvsNativeFlatBuffering && config.algoToRun.equals(Codex.CAGRA_HNSW)) {
+        if (config.flushFreq < numVectorsToIndex) {
+          throw new IllegalArgumentException(
+              "cuvsNativeFlatBuffering requires a single-segment build: set flushFreq >= "
+                  + numVectorsToIndex
+                  + " so all vectors land in one segment (got flushFreq="
+                  + config.flushFreq
+                  + ")");
+        }
+        log.info("<<< Native flat buffering enabled: numInputVectors={} >>>", numVectorsToIndex);
+        paramsBuilder.withNumInputVectors(numVectorsToIndex);
+      }
+
+      AcceleratedHNSWParams params = paramsBuilder.build();
 
       if (config.algoToRun.equals(Codex.CAGRA_HNSW)) {
         log.info("<<< Using Lucene101AcceleratedHNSWCodec (HEURISTIC strategy) >>>");

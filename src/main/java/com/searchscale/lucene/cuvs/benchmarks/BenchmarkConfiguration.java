@@ -38,6 +38,11 @@ public class BenchmarkConfiguration {
   public int forceMerge;
   public boolean enableTieredMerge;
   public boolean enableIndexWriterInfoStream;
+  // CAGRA_HNSW only: stream vectors straight into a native host matrix during indexing instead of
+  // buffering them as a List<float[]> on the Java heap, halving peak host memory for the build.
+  // Requires a single-segment build (flushFreq >= number of vectors indexed); ignored for other
+  // algorithms. See AcceleratedHNSWParams.withNumInputVectors.
+  public boolean cuvsNativeFlatBuffering;
 
   // Lucene HNSW parameters
   public int hnswMaxConn = 16; // 16 default (max 512)
