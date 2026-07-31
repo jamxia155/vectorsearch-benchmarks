@@ -36,6 +36,9 @@ public class BenchmarkConfiguration {
   public int ingestChunkSizeMB = 64;
   public boolean ingestPrefetch =
       true; // double-buffered prefetch reader (numIndexThreads=1 only; falls back otherwise)
+  public boolean partitionedOverlap =
+      false; // partitioned build: pipeline the K segment builds (ingest overlaps prior GPU commit)
+  public int partitionedPipelineDepth = 2; // max co-resident segment builds (peak host = depth*N/K)
   public boolean skipIndexing;
   public int forceMerge;
   public boolean enableTieredMerge;

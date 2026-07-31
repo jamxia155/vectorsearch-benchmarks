@@ -56,6 +56,7 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
   private final long headerBytes;
   private final int prefixBytes;
   private final int chunkVectors;
+  private final long firstVector; // absolute index of the first vector this reader serves
 
   private final BlockingQueue<ByteBuffer> free = new ArrayBlockingQueue<>(2);
   private final BlockingQueue<Chunk> ready = new ArrayBlockingQueue<>(2);
@@ -68,8 +69,19 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
     return ChunkedVectorProvider.supports(filePath);
   }
 
+  /** Reads the whole file (or the first {@code maxVectors}) from index 0. */
   public PrefetchingChunkedVectorProvider(String filePath, int maxVectors, int chunkSizeMB)
       throws IOException {
+    this(filePath, 0, maxVectors, chunkSizeMB);
+  }
+
+  /**
+   * Reads the contiguous range {@code [firstVector, firstVector + count)} (or to end of file if
+   * {@code count <= 0}) so each thread of the parallel partitioned build streams only its own slice.
+   * {@link #get} then serves absolute file indices within that range.
+   */
+  public PrefetchingChunkedVectorProvider(
+      String filePath, int firstVector, int count, int chunkSizeMB) throws IOException {
     if (filePath.contains("fbin")) {
       this.format = Format.FBIN;
       this.headerBytes = 8;
@@ -86,7 +98,7 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
     this.channel = FileChannel.open(Path.of(filePath), StandardOpenOption.READ);
 
     int dim;
-    int count;
+    int end;
     if (format == Format.FBIN) {
       // header: [num_vectors int32][dimension int32]
       ByteBuffer hdr = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
@@ -95,7 +107,7 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
       int numVectors = hdr.getInt();
       dim = hdr.getInt();
       this.vectorSize = 4 * dim;
-      count = maxVectors > 0 ? Math.min(maxVectors, numVectors) : numVectors;
+      end = count > 0 ? (int) Math.min((long) firstVector + count, numVectors) : numVectors;
     } else {
       // fvecs: the first 4 bytes are the first vector's dimension prefix
       ByteBuffer hdr = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
@@ -104,10 +116,11 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
       dim = hdr.getInt();
       this.vectorSize = 4 + 4 * dim;
       long total = channel.size() / vectorSize;
-      count = maxVectors > 0 ? (int) Math.min(maxVectors, total) : (int) total;
+      end = count > 0 ? (int) Math.min((long) firstVector + count, total) : (int) total;
     }
     this.dimension = dim;
-    this.vectorCount = count;
+    this.firstVector = firstVector;
+    this.vectorCount = end;
 
     // vectors per chunk, bounded so chunkVectors * vectorSize stays within an int
     long chunkBytes = (long) Math.max(1, chunkSizeMB) * 1024 * 1024;
@@ -123,7 +136,7 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
     log.info(
         "PrefetchingChunkedVectorProvider: {} vectors, {} dims, format {}, {} vectors/chunk (~{} MB),"
             + " double-buffered prefetch",
-        vectorCount,
+        vectorCount - firstVector,
         dimension,
         format,
         chunkVectors,
@@ -136,7 +149,7 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
 
   /** Reader thread: fill chunks front-to-back, blocking on a free buffer between chunks. */
   private void readLoop() {
-    long next = 0;
+    long next = firstVector;
     try {
       while (next < vectorCount) {
         ByteBuffer buf = free.take();
@@ -195,9 +208,9 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
 
   @Override
   public void get(int index, float[] dst) throws IOException {
-    if (index < 0 || index >= vectorCount) {
+    if (index < firstVector || index >= vectorCount) {
       throw new IndexOutOfBoundsException(
-          "Index " + index + " out of bounds [0, " + vectorCount + ")");
+          "Index " + index + " out of bounds [" + firstVector + ", " + vectorCount + ")");
     }
     while (current == null || index >= current.start + current.len) {
       advance();
@@ -229,7 +242,7 @@ public class PrefetchingChunkedVectorProvider implements VectorProvider {
 
   @Override
   public int size() {
-    return vectorCount;
+    return vectorCount - (int) firstVector;
   }
 
   @Override

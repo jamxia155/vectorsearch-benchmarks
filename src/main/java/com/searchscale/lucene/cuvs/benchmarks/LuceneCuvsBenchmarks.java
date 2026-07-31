@@ -28,6 +28,8 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.commons.io.FileUtils;
@@ -51,6 +53,7 @@ import org.apache.lucene.index.NoMergePolicy;
 import org.apache.lucene.index.SegmentReadState;
 import org.apache.lucene.index.SegmentWriteState;
 import org.apache.lucene.index.TieredMergePolicy;
+import org.apache.lucene.misc.store.HardlinkCopyDirectoryWrapper;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.ScoreDoc;
@@ -322,7 +325,13 @@ public class LuceneCuvsBenchmarks {
 
         long indexStartTime = System.currentTimeMillis();
         if (partitioned) {
-          buildPartitionedSegments(config, numVectorsToIndex, vectorProvider);
+          if (config.partitionedOverlap
+              && config.numIndexThreads > 1
+              && PrefetchingChunkedVectorProvider.supports(config.datasetFile)) {
+            buildPartitionedSegmentsOverlapped(config, numVectorsToIndex);
+          } else {
+            buildPartitionedSegments(config, numVectorsToIndex, vectorProvider);
+          }
         } else {
           IndexWriter writer;
 
@@ -642,6 +651,99 @@ public class LuceneCuvsBenchmarks {
   }
 
   /**
+   * Overlapped variant of the partitioned build (prototype). Each of the K = numIndexThreads
+   * segments is built into its own directory by a bounded pool ({@code partitionedPipelineDepth}
+   * concurrent tasks), so a segment's ingest overlaps a prior segment's GPU commit; the GPU build
+   * is serialized on a single permit. Peak host memory is {@code depth * (N/K)} native buffers.
+   * The K per-segment indexes are then assembled into the final directory by hardlinking their
+   * files (same filesystem) via addIndexes — no bulk copy of the vector data.
+   */
+  private static void buildPartitionedSegmentsOverlapped(
+      BenchmarkConfiguration config, int numVectorsToIndex) throws Exception {
+    int k = Math.max(1, config.numIndexThreads);
+    int depth = Math.max(1, Math.min(k, config.partitionedPipelineDepth));
+    log.info(
+        "Partitioned build (overlapped): {} segment(s) from {} vectors, pipeline depth {}",
+        k,
+        numVectorsToIndex,
+        depth);
+
+    int base = numVectorsToIndex / k;
+    int rem = numVectorsToIndex % k;
+    List<int[]> slices = new ArrayList<>(); // [start, size] per segment
+    List<Path> segDirs = new ArrayList<>();
+    int start = 0;
+    for (int p = 0; p < k; p++) {
+      int size = base + (p < rem ? 1 : 0);
+      if (size <= 0) {
+        continue;
+      }
+      slices.add(new int[] {start, size});
+      segDirs.add(Path.of(config.indexDirPath + "_p" + p));
+      start += size;
+    }
+
+    Semaphore gpuPermit = new Semaphore(1);
+    ExecutorService pool = Executors.newFixedThreadPool(depth);
+    List<Future<?>> futures = new ArrayList<>();
+    for (int i = 0; i < slices.size(); i++) {
+      final int[] slice = slices.get(i);
+      final Path segDir = segDirs.get(i);
+      futures.add(
+          pool.submit(
+              () -> {
+                Directory d = new SyncTimingDirectory(FSDirectory.open(segDir));
+                VectorProvider prov =
+                    new PrefetchingChunkedVectorProvider(
+                        config.datasetFile, slice[0], slice[1], config.ingestChunkSizeMB);
+                try {
+                  buildSegment(config, d, slice[0], slice[1], prov, true, gpuPermit);
+                } finally {
+                  prov.close();
+                  d.close();
+                }
+                return null;
+              }));
+    }
+    pool.shutdown();
+    try {
+      for (Future<?> f : futures) {
+        f.get(); // propagate any build failure
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+
+    // Assemble the per-segment indexes into the final directory. Hardlink their files (same FS)
+    // instead of copying the ~N GB of vector data.
+    long combineStart = StageTimers.start();
+    Directory[] sources = new Directory[segDirs.size()];
+    try {
+      for (int i = 0; i < segDirs.size(); i++) {
+        sources[i] = FSDirectory.open(segDirs.get(i));
+      }
+      IndexWriterConfig iwc =
+          new IndexWriterConfig(new StandardAnalyzer()).setMergePolicy(NoMergePolicy.INSTANCE);
+      try (Directory target =
+              new HardlinkCopyDirectoryWrapper(FSDirectory.open(Path.of(config.indexDirPath)));
+          IndexWriter combiner = new IndexWriter(target, iwc)) {
+        combiner.addIndexes(sources);
+      }
+    } finally {
+      for (Directory s : sources) {
+        if (s != null) {
+          s.close();
+        }
+      }
+    }
+    StageTimers.stop("combine [addIndexes+hardlink]", combineStart);
+
+    for (Path segDir : segDirs) {
+      FileUtils.deleteDirectory(segDir.toFile());
+    }
+  }
+
+  /**
    * Builds one segment from the contiguous slice {@code [sliceStart, sliceStart + sliceSize)}: a
    * fresh single-threaded {@link IndexWriter} whose codec's {@code numInputVectors} is sized for the
    * slice (so native flat buffering applies per segment). The first pass opens with {@code CREATE}
@@ -655,6 +757,23 @@ public class LuceneCuvsBenchmarks {
       int sliceSize,
       VectorProvider vectorProvider,
       boolean createNew)
+      throws Exception {
+    buildSegment(config, directory, sliceStart, sliceSize, vectorProvider, createNew, null);
+  }
+
+  /**
+   * As {@link #buildSegment(BenchmarkConfiguration, Directory, int, int, VectorProvider, boolean)},
+   * but when {@code gpuCommitPermit} is non-null the commit (which runs the GPU CAGRA build) is
+   * serialized on it while other segments' ingest may proceed — the partitioned-overlap path.
+   */
+  private static void buildSegment(
+      BenchmarkConfiguration config,
+      Directory directory,
+      int sliceStart,
+      int sliceSize,
+      VectorProvider vectorProvider,
+      boolean createNew,
+      Semaphore gpuCommitPermit)
       throws Exception {
     IndexWriterConfig iwc = new IndexWriterConfig(new StandardAnalyzer());
     iwc.setCodec(getCodec(config, sliceSize)); // numInputVectors = sliceSize for this segment
@@ -693,9 +812,18 @@ public class LuceneCuvsBenchmarks {
       }
       StageTimers.stop(
           "ingest [DISK+CPU]", ingestStart, (long) sliceSize * config.vectorDimension * Float.BYTES);
-      long commitStart = StageTimers.start();
-      writer.commit();
-      StageTimers.stop("commit [DISK; flush + GPU build + fsync]", commitStart);
+      if (gpuCommitPermit != null) {
+        gpuCommitPermit.acquire(); // serialize the GPU build across concurrent segment pipelines
+      }
+      try {
+        long commitStart = StageTimers.start();
+        writer.commit();
+        StageTimers.stop("commit [DISK; flush + GPU build + fsync]", commitStart);
+      } finally {
+        if (gpuCommitPermit != null) {
+          gpuCommitPermit.release();
+        }
+      }
     } finally {
       long closeStart = StageTimers.start();
       writer.close();
