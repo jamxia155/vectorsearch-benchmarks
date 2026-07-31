@@ -2,6 +2,7 @@ package com.searchscale.lucene.cuvs.benchmarks;
 
 import static org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN;
 
+import com.nvidia.cuvs.CagraIndexParams.CagraGraphBuildAlgo;
 import com.nvidia.cuvs.lucene.AcceleratedHNSWParams;
 import com.nvidia.cuvs.lucene.CuVS2510GPUSearchCodec;
 import com.nvidia.cuvs.lucene.GPUKnnFloatVectorQuery;
@@ -965,14 +966,12 @@ public class LuceneCuvsBenchmarks {
     } else {
       // Delegate IVF-PQ parameter selection to CagraIndexParamsFactory by using HEURISTIC mode.
       // The codec calls CagraIndexParamsFactory.create(params, rows, dimension) internally and
-      // auto-picks NN_DESCENT (<5M rows) or IVF_PQ (>=5M rows), auto-computing the
-      // IVF-PQ params from the actual row count and vector dimension at index-build time.
+      // auto-tunes the IVF-PQ params from the actual row count and vector dimension at build time.
       //
-      // In HEURISTIC mode, the factory ignores any explicit CuVSIvfPqParams or
-      // CagraGraphBuildAlgo set on the params object, so we no longer pass those.
-      // The following BenchmarkConfiguration fields become dead in this mode:
-      //   cuVSIvfPqIndexParams*, cuVSIvfPqSearchParams*, cuVSIvfPqParamsRefinementRate,
-      //   cagraGraphBuildAlgo
+      // The build algo defaults to the factory's row-count choice (NN_DESCENT <5M, IVF_PQ >=5M),
+      // unless cagraGraphBuildAlgo is set to IVF_PQ or NN_DESCENT to force it (AUTO_SELECT keeps the
+      // row-count default). Params stay auto-tuned regardless. The other IVF-PQ knobs remain dead in
+      // HEURISTIC mode: cuVSIvfPqIndexParams*, cuVSIvfPqSearchParams*, cuVSIvfPqParamsRefinementRate.
       AcceleratedHNSWParams.Builder paramsBuilder =
           new AcceleratedHNSWParams.Builder()
               .withStrategy(AcceleratedHNSWParams.Strategy.HEURISTIC)
@@ -981,7 +980,11 @@ public class LuceneCuvsBenchmarks {
               .withGraphDegree(config.cagraGraphDegree)
               .withHNSWLayer(config.cagraHnswLayers)
               .withMaxConn(config.hnswMaxConn)
-              .withBeamWidth(config.hnswBeamWidth);
+              .withBeamWidth(config.hnswBeamWidth)
+              .withCagraGraphBuildAlgo(
+                  config.cagraGraphBuildAlgo != null
+                      ? config.cagraGraphBuildAlgo
+                      : CagraGraphBuildAlgo.AUTO_SELECT);
 
       // Native flat buffering is only wired for the CAGRA_HNSW writer and needs the whole dataset in
       // one segment (the native host matrix is sized for the exact count). Fail fast on a
