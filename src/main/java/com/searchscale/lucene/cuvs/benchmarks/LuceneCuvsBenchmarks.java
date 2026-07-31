@@ -58,7 +58,6 @@ import org.apache.lucene.search.TopScoreDocCollectorManager;
 import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.store.MMapDirectory;
 import org.apache.lucene.util.PrintStreamInfoStream;
 import org.mapdb.DB;
@@ -304,65 +303,83 @@ public class LuceneCuvsBenchmarks {
     try {
       // [2] Benchmarking setup
       if (!config.skipIndexing) {
-        IndexWriter writer;
-
-        // HNSW Writer:
-        IndexWriterConfig indexWriterConfig = new IndexWriterConfig(new StandardAnalyzer());
         int numVectorsToIndex = Math.min(config.numDocs, vectorProvider.size());
-        indexWriterConfig.setCodec(getCodec(config, numVectorsToIndex));
-        indexWriterConfig.setMaxBufferedDocs(config.flushFreq);
-        indexWriterConfig.setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH);
 
-        if (config.forceMerge > 0 || config.enableTieredMerge) {
-          TieredMergePolicy tmp = new TieredMergePolicy();
-          if (config.forceMerge >= 1) {
-            // With 10M x 1536-dim vectors the full index is ~60+ GiB.
-            // Raise the ceiling above the full index size so the policy never
-            // silently caps a forceMerge to the requested segment count.
-            tmp.setMaxMergedSegmentMB(150 * 1024); // 150 GiB in MB
-            tmp.setSegmentsPerTier(2);
-            tmp.setMaxMergeAtOnce(500); // merge all segments in one round
-          }
-          indexWriterConfig.setMergePolicy(tmp);
-        } else {
-          indexWriterConfig.setMergePolicy(NoMergePolicy.INSTANCE);
-        }
+        // Partitioned K-segment build (K = numIndexThreads) when the whole dataset would otherwise
+        // land in one segment (flushFreq >= numDocs) and no merge is requested. K sequential passes
+        // each build one segment from a contiguous slice, so peak host memory stays at one slice's
+        // native buffer; K=1 reduces to the single-segment path. This enables native flat buffering
+        // and prefetch per segment, which the concurrent multi-thread path cannot (see buildSegment).
+        // Scoped to CAGRA_HNSW: sequential passes are free here because the GPU serializes builds
+        // anyway. For a CPU build (LUCENE_HNSW) they would lose cross-segment parallelism.
+        boolean partitioned =
+            config.algoToRun.equals(Codex.CAGRA_HNSW)
+                && !config.createIndexInMemory
+                && config.forceMerge <= 0
+                && !config.enableTieredMerge
+                && config.flushFreq >= numVectorsToIndex;
 
-        // Use reflection to bypass the 2048MB per-thread limit and set it to 60GB
-        setPerThreadRAMLimit(indexWriterConfig, 61440); // 60GB per thread
-        log.info(
-            "Configured HNSW writer - MaxBufferedDocs: {}, RAMBufferSizeMB: {}, PerThreadRAMLimit:"
-                + " {} MB",
-            config.flushFreq,
-            indexWriterConfig.getRAMBufferSizeMB(),
-            indexWriterConfig.getRAMPerThreadHardLimitMB());
-
-        if (!config.createIndexInMemory) {
-          Path hnswIndex = Path.of(config.indexDirPath);
-          writer =
-              new IndexWriter(
-                  new SyncTimingDirectory(FSDirectory.open(hnswIndex)), indexWriterConfig);
-        } else {
-          writer = new IndexWriter(new ByteBuffersDirectory(), indexWriterConfig);
-        }
-
-        if (config.enableIndexWriterInfoStream) {
-          indexWriterConfig.setInfoStream(new PrintStreamInfoStream(System.out));
-        }
-
-        var formatName = writer.getConfig().getCodec().knnVectorsFormat().getName();
-
-        log.info("Indexing documents using {} ...", formatName);
         long indexStartTime = System.currentTimeMillis();
-        indexDocuments(writer, config, titles, vectorProvider);
+        if (partitioned) {
+          buildPartitionedSegments(config, numVectorsToIndex, vectorProvider);
+        } else {
+          IndexWriter writer;
+
+          // HNSW Writer:
+          IndexWriterConfig indexWriterConfig = new IndexWriterConfig(new StandardAnalyzer());
+          indexWriterConfig.setCodec(getCodec(config, numVectorsToIndex));
+          indexWriterConfig.setMaxBufferedDocs(config.flushFreq);
+          indexWriterConfig.setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH);
+
+          if (config.forceMerge > 0 || config.enableTieredMerge) {
+            TieredMergePolicy tmp = new TieredMergePolicy();
+            if (config.forceMerge >= 1) {
+              // With 10M x 1536-dim vectors the full index is ~60+ GiB.
+              // Raise the ceiling above the full index size so the policy never
+              // silently caps a forceMerge to the requested segment count.
+              tmp.setMaxMergedSegmentMB(150 * 1024); // 150 GiB in MB
+              tmp.setSegmentsPerTier(2);
+              tmp.setMaxMergeAtOnce(500); // merge all segments in one round
+            }
+            indexWriterConfig.setMergePolicy(tmp);
+          } else {
+            indexWriterConfig.setMergePolicy(NoMergePolicy.INSTANCE);
+          }
+
+          // Use reflection to bypass the 2048MB per-thread limit and set it to 60GB
+          setPerThreadRAMLimit(indexWriterConfig, 61440); // 60GB per thread
+          log.info(
+              "Configured HNSW writer - MaxBufferedDocs: {}, RAMBufferSizeMB: {}, PerThreadRAMLimit:"
+                  + " {} MB",
+              config.flushFreq,
+              indexWriterConfig.getRAMBufferSizeMB(),
+              indexWriterConfig.getRAMPerThreadHardLimitMB());
+
+          if (!config.createIndexInMemory) {
+            Path hnswIndex = Path.of(config.indexDirPath);
+            writer =
+                new IndexWriter(
+                    new SyncTimingDirectory(FSDirectory.open(hnswIndex)), indexWriterConfig);
+          } else {
+            writer = new IndexWriter(new ByteBuffersDirectory(), indexWriterConfig);
+          }
+
+          if (config.enableIndexWriterInfoStream) {
+            indexWriterConfig.setInfoStream(new PrintStreamInfoStream(System.out));
+          }
+
+          log.info(
+              "Indexing documents using {} ...",
+              writer.getConfig().getCodec().knnVectorsFormat().getName());
+          indexDocuments(writer, config, titles, vectorProvider);
+        }
         long indexTimeTaken = System.currentTimeMillis() - indexStartTime;
 
         metrics.put(config.algoToRun + "-indexing-time", indexTimeTaken);
-
         log.info("Time taken for index building (end to end): {} ms", indexTimeTaken);
 
         try {
-          if (FilterDirectory.unwrap(writer.getDirectory()) instanceof FSDirectory) {
+          if (!config.createIndexInMemory) {
             Path indexPath = Paths.get(config.indexDirPath);
             long directorySize;
             try (var stream = Files.walk(indexPath, FileVisitOption.FOLLOW_LINKS)) {
@@ -372,7 +389,6 @@ public class LuceneCuvsBenchmarks {
 
             double directorySizeGB = directorySize / 1_073_741_824.0;
             metrics.put(config.algoToRun + "-index-size", directorySizeGB);
-
             log.info("Size of {}: {} GB", indexPath.toString(), directorySizeGB);
           }
         } catch (IOException e) {
@@ -590,6 +606,98 @@ public class LuceneCuvsBenchmarks {
     long closeStart = StageTimers.start();
     writer.close();
     StageTimers.stop("close [DISK; finalize]", closeStart);
+  }
+
+  /**
+   * Partitioned K-segment build: {@code K = numIndexThreads} contiguous slices, each built
+   * sequentially as one segment appended to the same directory. Sequential (not concurrent) so peak
+   * host memory is a single slice's native buffer, not K of them. The vector provider is streamed
+   * front-to-back across the passes, so a single forward-only prefetch reader spans all K.
+   */
+  private static void buildPartitionedSegments(
+      BenchmarkConfiguration config, int numVectorsToIndex, VectorProvider vectorProvider)
+      throws Exception {
+    int k = Math.max(1, config.numIndexThreads);
+    Path dir = Path.of(config.indexDirPath);
+    log.info(
+        "Partitioned build: {} segment(s) from {} vectors (K = numIndexThreads), sequential passes",
+        k,
+        numVectorsToIndex);
+    int base = numVectorsToIndex / k;
+    int rem = numVectorsToIndex % k;
+    int start = 0;
+    for (int p = 0; p < k; p++) {
+      int size = base + (p < rem ? 1 : 0); // spread the remainder over the first slices
+      if (size <= 0) {
+        continue;
+      }
+      log.info("Building segment {}/{}: docs [{}, {})", p + 1, k, start, start + size);
+      buildSegment(config, dir, start, size, vectorProvider, p == 0);
+      start += size;
+    }
+  }
+
+  /**
+   * Builds one segment from the contiguous slice {@code [sliceStart, sliceStart + sliceSize)}: a
+   * fresh single-threaded {@link IndexWriter} whose codec's {@code numInputVectors} is sized for the
+   * slice (so native flat buffering applies per segment). The first pass opens with {@code CREATE}
+   * (fresh index); later passes {@code APPEND} their segment. {@link NoMergePolicy} keeps the K
+   * segments separate. The provider is consumed forward, matching the prefetch reader's contract.
+   */
+  private static void buildSegment(
+      BenchmarkConfiguration config,
+      Path indexDirPath,
+      int sliceStart,
+      int sliceSize,
+      VectorProvider vectorProvider,
+      boolean createNew)
+      throws Exception {
+    IndexWriterConfig iwc = new IndexWriterConfig(new StandardAnalyzer());
+    iwc.setCodec(getCodec(config, sliceSize)); // numInputVectors = sliceSize for this segment
+    iwc.setMaxBufferedDocs(config.flushFreq);
+    iwc.setRAMBufferSizeMB(IndexWriterConfig.DISABLE_AUTO_FLUSH);
+    iwc.setMergePolicy(NoMergePolicy.INSTANCE);
+    iwc.setOpenMode(
+        createNew ? IndexWriterConfig.OpenMode.CREATE : IndexWriterConfig.OpenMode.APPEND);
+    setPerThreadRAMLimit(iwc, 61440); // 60GB per thread
+
+    IndexWriter writer =
+        new IndexWriter(new SyncTimingDirectory(FSDirectory.open(indexDirPath)), iwc);
+    boolean reuseScratch = vectorProvider instanceof PrefetchingChunkedVectorProvider;
+    float[] scratch = reuseScratch ? new float[config.vectorDimension] : null;
+    try {
+      long ingestStart = StageTimers.start();
+      for (int i = 0; i < sliceSize; i++) {
+        int id = sliceStart + i;
+        float[] vector;
+        try {
+          if (reuseScratch) {
+            vectorProvider.get(id, scratch);
+            vector = scratch;
+          } else {
+            vector = Objects.requireNonNull(vectorProvider.get(id));
+          }
+        } catch (IOException e) {
+          throw new UncheckedIOException("Failed to read vector at index " + id, e);
+        }
+        Document doc = new Document();
+        doc.add(new StringField("id", String.valueOf(id), Field.Store.YES));
+        doc.add(new KnnFloatVectorField(config.vectorColName, vector, EUCLIDEAN));
+        writer.addDocument(doc);
+        if ((id + 1) % 25000 == 0) {
+          log.info("Done indexing {} documents. Pending docs: {}", id + 1, writer.getPendingNumDocs());
+        }
+      }
+      StageTimers.stop(
+          "ingest [DISK+CPU]", ingestStart, (long) sliceSize * config.vectorDimension * Float.BYTES);
+      long commitStart = StageTimers.start();
+      writer.commit();
+      StageTimers.stop("commit [DISK; flush + GPU build + fsync]", commitStart);
+    } finally {
+      long closeStart = StageTimers.start();
+      writer.close();
+      StageTimers.stop("close [DISK; finalize]", closeStart);
+    }
   }
 
   /**
