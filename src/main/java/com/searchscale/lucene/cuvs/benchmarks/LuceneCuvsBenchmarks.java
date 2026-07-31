@@ -58,6 +58,7 @@ import org.apache.lucene.search.TopScoreDocCollectorManager;
 import org.apache.lucene.store.ByteBuffersDirectory;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.store.FilterDirectory;
 import org.apache.lucene.store.MMapDirectory;
 import org.apache.lucene.util.PrintStreamInfoStream;
 import org.mapdb.DB;
@@ -322,7 +323,9 @@ public class LuceneCuvsBenchmarks {
 
         if (!config.createIndexInMemory) {
           Path hnswIndex = Path.of(config.indexDirPath);
-          writer = new IndexWriter(FSDirectory.open(hnswIndex), indexWriterConfig);
+          writer =
+              new IndexWriter(
+                  new SyncTimingDirectory(FSDirectory.open(hnswIndex)), indexWriterConfig);
         } else {
           writer = new IndexWriter(new ByteBuffersDirectory(), indexWriterConfig);
         }
@@ -343,7 +346,7 @@ public class LuceneCuvsBenchmarks {
         log.info("Time taken for index building (end to end): {} ms", indexTimeTaken);
 
         try {
-          if (writer.getDirectory() instanceof FSDirectory) {
+          if (FilterDirectory.unwrap(writer.getDirectory()) instanceof FSDirectory) {
             Path indexPath = Paths.get(config.indexDirPath);
             long directorySize;
             try (var stream = Files.walk(indexPath, FileVisitOption.FOLLOW_LINKS)) {

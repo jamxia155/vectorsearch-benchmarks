@@ -102,7 +102,7 @@ for sweep in sweeps:
                 # Set indexDirPath based on hash
                 hash_input = {k: v for k, v in config.items() if k != 'indexDirPath'}
                 hash_id = hashlib.md5(json.dumps(hash_input, sort_keys=True, default=str).encode()).hexdigest()[:8]
-                config['indexDirPath'] = f"index-{hash_id}"
+                config['indexDirPath'] = os.path.join(config.get('indexDirPath', ''), f"index-{hash_id}")
 
                 filename = f"{algo}-{hash_id}.json"
                 sweep_dir = f"{args.configs_dir}/{sweep}"
@@ -113,11 +113,12 @@ for sweep in sweeps:
                 print(f"\tGenerated config file: {filepath}")
         else:
             # No variants at all, just generate a single config
-            hash_id = hashlib.md5(json.dumps(algo_invariants, sort_keys=True).encode()).hexdigest()[:8]
             config = algo_invariants.copy()
 
             # Set indexDirPath based on hash
-            config['indexDirPath'] = f"index-{hash_id}"
+            hash_input = {k: v for k, v in config.items() if k != 'indexDirPath'}
+            hash_id = hashlib.md5(json.dumps(hash_input, sort_keys=True, default=str).encode()).hexdigest()[:8]
+            config['indexDirPath'] = os.path.join(config.get('indexDirPath', ''), f"index-{hash_id}")
 
             filename = f"{algo}-{hash_id}.json"
             sweep_dir = f"{args.configs_dir}/{sweep}"
