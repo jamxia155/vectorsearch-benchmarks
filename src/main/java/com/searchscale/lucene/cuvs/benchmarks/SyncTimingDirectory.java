@@ -5,7 +5,11 @@
 package com.searchscale.lucene.cuvs.benchmarks;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FilterDirectory;
 
@@ -17,14 +21,30 @@ import org.apache.lucene.store.FilterDirectory;
  */
 public final class SyncTimingDirectory extends FilterDirectory {
 
+  // Files already fsync'd over this wrapper's lifetime. Sharing one wrapper across the K sequential
+  // IndexWriters of a partitioned build lets us skip re-syncing prior segments: each fresh writer's
+  // commit would otherwise re-fsync every existing segment file (O(K^2) work). Re-fsyncing an
+  // already-durable, immutable segment file is a no-op for durability, so skipping it is safe; the
+  // commit point (segments_N) gets a fresh name each commit, so it is never skipped.
+  private final Set<String> synced = ConcurrentHashMap.newKeySet();
+
   public SyncTimingDirectory(Directory in) {
     super(in);
   }
 
   @Override
   public void sync(Collection<String> names) throws IOException {
-    long bytes = 0L;
+    List<String> toSync = new ArrayList<>(names.size());
     for (String name : names) {
+      if (synced.add(name)) {
+        toSync.add(name);
+      }
+    }
+    if (toSync.isEmpty()) {
+      return;
+    }
+    long bytes = 0L;
+    for (String name : toSync) {
       try {
         bytes += fileLength(name);
       } catch (IOException e) {
@@ -32,7 +52,7 @@ public final class SyncTimingDirectory extends FilterDirectory {
       }
     }
     long ts = StageTimers.start();
-    in.sync(names);
+    in.sync(toSync);
     StageTimers.stop("durable-sync [DISK; fsync]", ts, bytes);
   }
 

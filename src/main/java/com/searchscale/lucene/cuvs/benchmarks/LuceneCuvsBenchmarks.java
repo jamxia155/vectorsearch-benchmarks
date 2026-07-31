@@ -618,22 +618,25 @@ public class LuceneCuvsBenchmarks {
       BenchmarkConfiguration config, int numVectorsToIndex, VectorProvider vectorProvider)
       throws Exception {
     int k = Math.max(1, config.numIndexThreads);
-    Path dir = Path.of(config.indexDirPath);
     log.info(
         "Partitioned build: {} segment(s) from {} vectors (K = numIndexThreads), sequential passes",
         k,
         numVectorsToIndex);
-    int base = numVectorsToIndex / k;
-    int rem = numVectorsToIndex % k;
-    int start = 0;
-    for (int p = 0; p < k; p++) {
-      int size = base + (p < rem ? 1 : 0); // spread the remainder over the first slices
-      if (size <= 0) {
-        continue;
+    // One directory shared across all K passes: its sync-once tracking skips re-fsyncing prior
+    // segments that each fresh per-pass IndexWriter would otherwise re-sync (O(K^2) -> O(K)).
+    try (Directory dir = new SyncTimingDirectory(FSDirectory.open(Path.of(config.indexDirPath)))) {
+      int base = numVectorsToIndex / k;
+      int rem = numVectorsToIndex % k;
+      int start = 0;
+      for (int p = 0; p < k; p++) {
+        int size = base + (p < rem ? 1 : 0); // spread the remainder over the first slices
+        if (size <= 0) {
+          continue;
+        }
+        log.info("Building segment {}/{}: docs [{}, {})", p + 1, k, start, start + size);
+        buildSegment(config, dir, start, size, vectorProvider, p == 0);
+        start += size;
       }
-      log.info("Building segment {}/{}: docs [{}, {})", p + 1, k, start, start + size);
-      buildSegment(config, dir, start, size, vectorProvider, p == 0);
-      start += size;
     }
   }
 
@@ -646,7 +649,7 @@ public class LuceneCuvsBenchmarks {
    */
   private static void buildSegment(
       BenchmarkConfiguration config,
-      Path indexDirPath,
+      Directory directory,
       int sliceStart,
       int sliceSize,
       VectorProvider vectorProvider,
@@ -661,8 +664,7 @@ public class LuceneCuvsBenchmarks {
         createNew ? IndexWriterConfig.OpenMode.CREATE : IndexWriterConfig.OpenMode.APPEND);
     setPerThreadRAMLimit(iwc, 61440); // 60GB per thread
 
-    IndexWriter writer =
-        new IndexWriter(new SyncTimingDirectory(FSDirectory.open(indexDirPath)), iwc);
+    IndexWriter writer = new IndexWriter(directory, iwc);
     boolean reuseScratch = vectorProvider instanceof PrefetchingChunkedVectorProvider;
     float[] scratch = reuseScratch ? new float[config.vectorDimension] : null;
     try {
