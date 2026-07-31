@@ -323,6 +323,11 @@ public class LuceneCuvsBenchmarks {
                 && !config.enableTieredMerge
                 && config.flushFreq >= numVectorsToIndex;
 
+        if (config.partitionedOverlap && !partitioned) {
+          log.info(
+              "partitionedOverlap ignored: applies only to the partitioned CAGRA_HNSW build"
+                  + " (needs flushFreq>=numDocs, no merge, on-disk index)");
+        }
         long indexStartTime = System.currentTimeMillis();
         if (partitioned) {
           if (config.partitionedOverlap
@@ -330,6 +335,12 @@ public class LuceneCuvsBenchmarks {
               && PrefetchingChunkedVectorProvider.supports(config.datasetFile)) {
             buildPartitionedSegmentsOverlapped(config, numVectorsToIndex);
           } else {
+            if (config.partitionedOverlap) {
+              log.info(
+                  "partitionedOverlap ignored: requires numIndexThreads>1 and a .fbin/.fvecs"
+                      + " dataset (got numIndexThreads={})",
+                  config.numIndexThreads);
+            }
             buildPartitionedSegments(config, numVectorsToIndex, vectorProvider);
           }
         } else {
@@ -662,17 +673,13 @@ public class LuceneCuvsBenchmarks {
       BenchmarkConfiguration config, int numVectorsToIndex) throws Exception {
     int k = Math.max(1, config.numIndexThreads);
     int depth = Math.max(1, Math.min(k, config.partitionedPipelineDepth));
-    log.info(
-        "Partitioned build (overlapped): {} segment(s) from {} vectors, pipeline depth {}",
-        k,
-        numVectorsToIndex,
-        depth);
 
     int base = numVectorsToIndex / k;
     int rem = numVectorsToIndex % k;
     List<int[]> slices = new ArrayList<>(); // [start, size] per segment
     List<Path> segDirs = new ArrayList<>();
     int start = 0;
+    int maxSlice = 0;
     for (int p = 0; p < k; p++) {
       int size = base + (p < rem ? 1 : 0);
       if (size <= 0) {
@@ -681,65 +688,87 @@ public class LuceneCuvsBenchmarks {
       slices.add(new int[] {start, size});
       segDirs.add(Path.of(config.indexDirPath + "_p" + p));
       start += size;
+      maxSlice = Math.max(maxSlice, size);
     }
 
-    Semaphore gpuPermit = new Semaphore(1);
-    ExecutorService pool = Executors.newFixedThreadPool(depth);
-    List<Future<?>> futures = new ArrayList<>();
-    for (int i = 0; i < slices.size(); i++) {
-      final int[] slice = slices.get(i);
-      final Path segDir = segDirs.get(i);
-      futures.add(
-          pool.submit(
-              () -> {
-                Directory d = new SyncTimingDirectory(FSDirectory.open(segDir));
-                VectorProvider prov =
-                    new PrefetchingChunkedVectorProvider(
-                        config.datasetFile, slice[0], slice[1], config.ingestChunkSizeMB);
-                try {
-                  buildSegment(config, d, slice[0], slice[1], prov, true, gpuPermit);
-                } finally {
-                  prov.close();
-                  d.close();
-                }
-                return null;
-              }));
-    }
-    pool.shutdown();
-    try {
-      for (Future<?> f : futures) {
-        f.get(); // propagate any build failure
-      }
-    } finally {
-      pool.shutdownNow();
-    }
+    // Peak HOST memory is up to `depth` co-resident native buffers (each ~ one slice's vectors);
+    // DEVICE memory stays at a single build's footprint because the GPU commit is serialized on
+    // gpuPermit (host-side ingest never touches the device).
+    double peakHostGb = (double) depth * maxSlice * config.vectorDimension * Float.BYTES / 1e9;
+    log.info(
+        "Partitioned build (overlapped): {} segment(s) from {} vectors, pipeline depth {}"
+            + " (up to {} co-resident native host buffers, ~{} GB peak host)",
+        slices.size(),
+        numVectorsToIndex,
+        depth,
+        depth,
+        String.format("%.1f", peakHostGb));
 
-    // Assemble the per-segment indexes into the final directory. Hardlink their files (same FS)
-    // instead of copying the ~N GB of vector data.
-    long combineStart = StageTimers.start();
-    Directory[] sources = new Directory[segDirs.size()];
+    // Start from fresh per-segment temp dirs, and always remove them afterwards (even on failure)
+    // so a crashed build does not leave ~N GB of orphaned indexes behind.
+    for (Path segDir : segDirs) {
+      FileUtils.deleteQuietly(segDir.toFile());
+    }
     try {
-      for (int i = 0; i < segDirs.size(); i++) {
-        sources[i] = FSDirectory.open(segDirs.get(i));
+      Semaphore gpuPermit = new Semaphore(1);
+      ExecutorService pool = Executors.newFixedThreadPool(depth);
+      List<Future<?>> futures = new ArrayList<>();
+      for (int i = 0; i < slices.size(); i++) {
+        final int[] slice = slices.get(i);
+        final Path segDir = segDirs.get(i);
+        futures.add(
+            pool.submit(
+                () -> {
+                  Directory d = new SyncTimingDirectory(FSDirectory.open(segDir));
+                  VectorProvider prov =
+                      new PrefetchingChunkedVectorProvider(
+                          config.datasetFile, slice[0], slice[1], config.ingestChunkSizeMB);
+                  try {
+                    buildSegment(config, d, slice[0], slice[1], prov, true, gpuPermit);
+                  } finally {
+                    prov.close();
+                    d.close();
+                  }
+                  return null;
+                }));
       }
-      IndexWriterConfig iwc =
-          new IndexWriterConfig(new StandardAnalyzer()).setMergePolicy(NoMergePolicy.INSTANCE);
-      try (Directory target =
-              new HardlinkCopyDirectoryWrapper(FSDirectory.open(Path.of(config.indexDirPath)));
-          IndexWriter combiner = new IndexWriter(target, iwc)) {
-        combiner.addIndexes(sources);
+      pool.shutdown();
+      try {
+        for (Future<?> f : futures) {
+          f.get(); // propagate any build failure
+        }
+      } finally {
+        pool.shutdownNow();
       }
-    } finally {
-      for (Directory s : sources) {
-        if (s != null) {
-          s.close();
+
+      // Assemble the per-segment indexes into the final directory. Hardlink their files (same FS)
+      // instead of copying the ~N GB of vector data; HardlinkCopyDirectoryWrapper falls back to a
+      // byte copy if the segment dirs and the final dir are on different filesystems.
+      long combineStart = StageTimers.start();
+      Directory[] sources = new Directory[segDirs.size()];
+      try {
+        for (int i = 0; i < segDirs.size(); i++) {
+          sources[i] = FSDirectory.open(segDirs.get(i));
+        }
+        IndexWriterConfig iwc =
+            new IndexWriterConfig(new StandardAnalyzer()).setMergePolicy(NoMergePolicy.INSTANCE);
+        try (Directory target =
+                new HardlinkCopyDirectoryWrapper(FSDirectory.open(Path.of(config.indexDirPath)));
+            IndexWriter combiner = new IndexWriter(target, iwc)) {
+          combiner.addIndexes(sources);
+        }
+      } finally {
+        for (Directory s : sources) {
+          if (s != null) {
+            s.close();
+          }
         }
       }
-    }
-    StageTimers.stop("combine [addIndexes+hardlink]", combineStart);
-
-    for (Path segDir : segDirs) {
-      FileUtils.deleteDirectory(segDir.toFile());
+      StageTimers.stop("combine [addIndexes+hardlink]", combineStart);
+    } finally {
+      for (Path segDir : segDirs) {
+        FileUtils.deleteQuietly(segDir.toFile());
+      }
     }
   }
 
