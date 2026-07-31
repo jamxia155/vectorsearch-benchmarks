@@ -34,6 +34,7 @@ public class BenchmarkConfiguration {
   public boolean loadVectorsInMemory;
   // Chunk size (MB) for the sequential ChunkedVectorProvider used when loadVectorsInMemory=false.
   public int ingestChunkSizeMB = 64;
+  public boolean ingestPrefetch = false; // double-buffered prefetch reader (numIndexThreads=1 only)
   public boolean skipIndexing;
   public int forceMerge;
   public boolean enableTieredMerge;

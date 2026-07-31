@@ -231,11 +231,26 @@ public class LuceneCuvsBenchmarks {
             loadedVectors.size(),
             (System.currentTimeMillis() - start));
       } else if (ChunkedVectorProvider.supports(config.datasetFile)) {
-        log.info(
-            "Creating chunked sequential vector provider ({} MB chunks)", config.ingestChunkSizeMB);
-        vectorProvider =
-            new ChunkedVectorProvider(
-                config.datasetFile, config.numDocs, config.ingestChunkSizeMB);
+        if (config.ingestPrefetch && config.numIndexThreads == 1) {
+          log.info(
+              "Creating prefetching chunked vector provider ({} MB chunks, double-buffered)",
+              config.ingestChunkSizeMB);
+          vectorProvider =
+              new PrefetchingChunkedVectorProvider(
+                  config.datasetFile, config.numDocs, config.ingestChunkSizeMB);
+        } else {
+          if (config.ingestPrefetch) {
+            log.warn(
+                "ingestPrefetch ignored: requires numIndexThreads=1 (got {})",
+                config.numIndexThreads);
+          }
+          log.info(
+              "Creating chunked sequential vector provider ({} MB chunks)",
+              config.ingestChunkSizeMB);
+          vectorProvider =
+              new ChunkedVectorProvider(
+                  config.datasetFile, config.numDocs, config.ingestChunkSizeMB);
+        }
       } else {
         log.info("Creating streaming vector provider (loadVectorsInMemory is disabled)");
         vectorProvider = new StreamingVectorProvider(config.datasetFile, config.numDocs);
@@ -511,9 +526,13 @@ public class LuceneCuvsBenchmarks {
     final int numDocsToIndex = Math.min(config.numDocs, vectorProvider.size());
 
     long ingestStart = StageTimers.start();
+    // The prefetch provider unpacks directly into a caller-reused array (safe: the writer copies
+    // each vector eagerly at addValue). Other providers keep returning fresh arrays.
+    final boolean reuseScratch = vectorProvider instanceof PrefetchingChunkedVectorProvider;
     for (int i = 0; i < threads; i++) {
       pool.submit(
           () -> {
+            float[] scratch = reuseScratch ? new float[config.vectorDimension] : null;
             while (true) {
               int id = numDocsIndexed.getAndIncrement();
               if (id >= numDocsToIndex) {
@@ -521,7 +540,12 @@ public class LuceneCuvsBenchmarks {
               }
               float[] vector;
               try {
-                vector = Objects.requireNonNull(vectorProvider.get(id));
+                if (reuseScratch) {
+                  vectorProvider.get(id, scratch);
+                  vector = scratch;
+                } else {
+                  vector = Objects.requireNonNull(vectorProvider.get(id));
+                }
               } catch (IOException e) {
                 throw new UncheckedIOException("Failed to read vector at index " + id, e);
               }

@@ -12,6 +12,16 @@ public interface VectorProvider {
   float[] get(int index) throws IOException;
 
   /**
+   * Fill {@code dst} with the vector at the specified index, avoiding a per-call allocation. The
+   * default copies from {@link #get(int)}; providers backed by a reusable buffer should override to
+   * unpack directly. Callers may reuse {@code dst} once the vector has been consumed.
+   */
+  default void get(int index, float[] dst) throws IOException {
+    float[] v = get(index);
+    System.arraycopy(v, 0, dst, 0, dst.length);
+  }
+
+  /**
    * Get the total number of vectors
    */
   int size();
