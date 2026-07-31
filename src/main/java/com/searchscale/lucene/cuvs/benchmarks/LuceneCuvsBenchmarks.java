@@ -240,8 +240,9 @@ public class LuceneCuvsBenchmarks {
                   config.datasetFile, config.numDocs, config.ingestChunkSizeMB);
         } else {
           if (config.ingestPrefetch) {
-            log.warn(
-                "ingestPrefetch ignored: requires numIndexThreads=1 (got {})",
+            log.info(
+                "Prefetch ingest requires numIndexThreads=1 (got {}); using sequential chunked"
+                    + " provider",
                 config.numIndexThreads);
           }
           log.info(
