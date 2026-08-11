@@ -4,6 +4,7 @@ import static org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN;
 
 import com.nvidia.cuvs.CagraIndexParams.CagraGraphBuildAlgo;
 import com.nvidia.cuvs.lucene.AcceleratedHNSWParams;
+import com.nvidia.cuvs.spi.CuVSProvider;
 import com.nvidia.cuvs.lucene.CuVS2510GPUSearchCodec;
 import com.nvidia.cuvs.lucene.GPUKnnFloatVectorQuery;
 import com.nvidia.cuvs.lucene.GPUSearchParams;
@@ -306,6 +307,7 @@ public class LuceneCuvsBenchmarks {
 
     try {
       // [2] Benchmarking setup
+      CuVSProvider.provider().enableRMMAsyncMemory();
       if (!config.skipIndexing) {
         int numVectorsToIndex = Math.min(config.numDocs, vectorProvider.size());
 
