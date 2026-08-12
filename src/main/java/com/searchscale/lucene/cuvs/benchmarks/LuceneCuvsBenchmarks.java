@@ -307,7 +307,13 @@ public class LuceneCuvsBenchmarks {
 
     try {
       // [2] Benchmarking setup
-      CuVSProvider.provider().enableRMMAsyncMemory();
+      // Enable RMM async memory pool for GPU algorithms (CAGRA_HNSW, CAGRA_SEARCH,
+      // CAGRA_HNSW_BINARY, CAGRA_HNSW_SCALAR). Must NOT be called for LUCENE_HNSW: that path
+      // never loads the cuVS native library, so CuVSProvider resolves to UnsupportedProvider
+      // and throws.
+      if (config.isCagra() || config.isCagraSearch() || config.isCagraHNSWBinary() || config.isCagraHNSWScalar()) {
+        CuVSProvider.provider().enableRMMAsyncMemory();
+      }
       if (!config.skipIndexing) {
         int numVectorsToIndex = Math.min(config.numDocs, vectorProvider.size());
 
