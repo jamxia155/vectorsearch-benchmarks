@@ -1129,17 +1129,24 @@ public class LuceneCuvsBenchmarks {
         }
       };
     } else {
-      // Delegate IVF-PQ parameter selection to CagraIndexParamsFactory by using HEURISTIC mode.
-      // The codec calls CagraIndexParamsFactory.create(params, rows, dimension) internally and
-      // auto-tunes the IVF-PQ params from the actual row count and vector dimension at build time.
+      // Strategy.HEURISTIC (default) delegates IVF-PQ parameter selection to
+      // CagraIndexParamsFactory. The codec calls CagraIndexParamsFactory.create(params, rows,
+      // dimension) internally and auto-tunes the IVF-PQ params from the actual row count and
+      // vector dimension at build time.
       //
-      // The build algo defaults to the factory's row-count choice (NN_DESCENT <5M, IVF_PQ >=5M),
-      // unless cagraGraphBuildAlgo is set to IVF_PQ or NN_DESCENT to force it (AUTO_SELECT keeps the
-      // row-count default). Params stay auto-tuned regardless. The other IVF-PQ knobs remain dead in
-      // HEURISTIC mode: cuVSIvfPqIndexParams*, cuVSIvfPqSearchParams*, cuVSIvfPqParamsRefinementRate.
+      // Under HEURISTIC, the build algo defaults to the factory's row-count choice (NN_DESCENT
+      // <5M, IVF_PQ >=5M), unless cagraGraphBuildAlgo is set to IVF_PQ or NN_DESCENT to force it
+      // (AUTO_SELECT keeps the row-count default). Params stay auto-tuned regardless, and
+      // cagraGraphDegree/cagraIntermediateGraphDegree are ignored: the graph shape comes from
+      // hnswMaxConn/hnswBeamWidth. The other IVF-PQ knobs remain dead in HEURISTIC mode:
+      // cuVSIvfPqIndexParams*, cuVSIvfPqSearchParams*, cuVSIvfPqParamsRefinementRate.
+      //
+      // Strategy.CUSTOM forwards cagraGraphDegree/cagraIntermediateGraphDegree/cagraGraphBuildAlgo
+      // to the CAGRA build directly; hnswMaxConn/hnswBeamWidth are then ignored for the GPU build
+      // (they still drive the CPU-fallback Lucene HNSW writer if cuVS is unavailable at runtime).
       AcceleratedHNSWParams.Builder paramsBuilder =
           new AcceleratedHNSWParams.Builder()
-              .withStrategy(AcceleratedHNSWParams.Strategy.HEURISTIC)
+              .withStrategy(config.strategy)
               .withWriterThreads(config.cuvsWriterThreads)
               .withIntermediateGraphDegree(config.cagraIntermediateGraphDegree)
               .withGraphDegree(config.cagraGraphDegree)
@@ -1170,13 +1177,13 @@ public class LuceneCuvsBenchmarks {
       AcceleratedHNSWParams params = paramsBuilder.build();
 
       if (config.algoToRun.equals(Codex.CAGRA_HNSW)) {
-        log.info("<<< Using Lucene101AcceleratedHNSWCodec (HEURISTIC strategy) >>>");
+        log.info("<<< Using Lucene101AcceleratedHNSWCodec ({} strategy) >>>", config.strategy);
         return new Lucene101AcceleratedHNSWCodec(params);
       } else if (config.algoToRun.equals(Codex.CAGRA_SEARCH)) {
-        log.info("<<< Using CuVS2510GPUSearchCodec (HEURISTIC strategy) >>>");
+        log.info("<<< Using CuVS2510GPUSearchCodec ({} strategy) >>>", config.strategy);
         GPUSearchParams gpuParams =
             new GPUSearchParams.Builder()
-                .withStrategy(GPUSearchParams.Strategy.HEURISTIC)
+                .withStrategy(GPUSearchParams.Strategy.valueOf(config.strategy.name()))
                 .withWriterThreads(config.cuvsWriterThreads)
                 .withIntermediateGraphDegree(config.cagraIntermediateGraphDegree)
                 .withGraphDegree(config.cagraGraphDegree)

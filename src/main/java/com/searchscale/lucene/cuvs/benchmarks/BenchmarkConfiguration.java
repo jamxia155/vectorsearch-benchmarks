@@ -4,6 +4,7 @@ import com.nvidia.cuvs.CagraIndexParams.CagraGraphBuildAlgo;
 import com.nvidia.cuvs.CagraIndexParams.CodebookGen;
 import com.nvidia.cuvs.CagraIndexParams.CudaDataType;
 import com.nvidia.cuvs.CagraIndexParams.CuvsDistanceType;
+import com.nvidia.cuvs.lucene.AcceleratedHNSWParams;
 import com.searchscale.lucene.cuvs.benchmarks.LuceneCuvsBenchmarks.Codex;
 import java.util.List;
 
@@ -62,6 +63,12 @@ public class BenchmarkConfiguration {
   public int cagraHnswLayers; // layers in CAGRA->HNSW conversion
   public List<Integer> efSearch; // e.g. [64] or [64, 128, 256]
   public CagraGraphBuildAlgo cagraGraphBuildAlgo;
+  // AcceleratedHNSWParams.Strategy: HEURISTIC (default) derives the CAGRA build params from
+  // hnswMaxConn/hnswBeamWidth via CagraIndexParamsFactory, ignoring cagraGraphDegree/
+  // cagraIntermediateGraphDegree. CUSTOM forwards cagraGraphDegree/cagraIntermediateGraphDegree
+  // (and cagraGraphBuildAlgo) directly instead. Applies to both CAGRA_HNSW and CAGRA_SEARCH
+  // (GPUSearchParams.Strategy has the same HEURISTIC/CUSTOM values).
+  public AcceleratedHNSWParams.Strategy strategy = AcceleratedHNSWParams.Strategy.HEURISTIC;
 
   // CAGRA IVF_PQ parameters
   public int cuVSIvfPqParamsRefinementRate = 1;
@@ -196,6 +203,7 @@ public class BenchmarkConfiguration {
       sb.append("hnswMaxConn: ").append(hnswMaxConn).append('\n');
       sb.append("hnswBeamWidth: ").append(hnswBeamWidth).append('\n');
     } else {
+      sb.append("strategy: ").append(strategy).append('\n');
       sb.append("cagraIntermediateGraphDegree: ").append(cagraIntermediateGraphDegree).append('\n');
       sb.append("cagraGraphDegree: ").append(cagraGraphDegree).append('\n');
       sb.append("cuvsWriterThreads: ").append(cuvsWriterThreads).append('\n');
