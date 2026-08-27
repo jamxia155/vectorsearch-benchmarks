@@ -47,7 +47,8 @@ public class BenchmarkConfiguration {
   // CAGRA_HNSW only: stream vectors straight into a native host matrix during indexing instead of
   // buffering them as a List<float[]> on the Java heap, halving peak host memory for the build.
   // Requires a single-segment build (flushFreq >= number of vectors indexed); ignored for other
-  // algorithms. See AcceleratedHNSWParams.withNumInputVectors.
+  // algorithms. Routed through com.nvidia.cuvs.lucene.CagraHnswBulkIndexWriter, which is the only
+  // caller allowed to size the native buffer (see LuceneCuvsBenchmarks#buildViaCagraHnswBulkIndexWriter).
   public boolean cuvsNativeFlatBuffering;
 
   // Lucene HNSW parameters

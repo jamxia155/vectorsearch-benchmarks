@@ -5,12 +5,14 @@ import static org.apache.lucene.index.VectorSimilarityFunction.EUCLIDEAN;
 import com.nvidia.cuvs.CagraIndexParams.CagraGraphBuildAlgo;
 import com.nvidia.cuvs.lucene.AcceleratedHNSWParams;
 import com.nvidia.cuvs.spi.CuVSProvider;
+import com.nvidia.cuvs.lucene.CagraHnswBulkIndexWriter;
 import com.nvidia.cuvs.lucene.CuVS2510GPUSearchCodec;
 import com.nvidia.cuvs.lucene.GPUKnnFloatVectorQuery;
 import com.nvidia.cuvs.lucene.GPUSearchParams;
 import com.nvidia.cuvs.lucene.Lucene101AcceleratedHNSWCodec;
 import com.nvidia.cuvs.lucene.LuceneAcceleratedHNSWBinaryQuantizedCodec;
 import com.nvidia.cuvs.lucene.LuceneAcceleratedHNSWScalarQuantizedCodec;
+import com.nvidia.cuvs.lucene.VectorSource;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -320,10 +322,10 @@ public class LuceneCuvsBenchmarks {
         // Partitioned K-segment build (K = numIndexThreads) when the whole dataset would otherwise
         // land in one segment (flushFreq >= numDocs) and no merge is requested. K sequential passes
         // each build one segment from a contiguous slice, so peak host memory stays at one slice's
-        // native buffer; K=1 reduces to the single-segment path. This enables native flat buffering
-        // and prefetch per segment, which the concurrent multi-thread path cannot (see buildSegment).
-        // Scoped to CAGRA_HNSW: sequential passes are free here because the GPU serializes builds
-        // anyway. For a CPU build (LUCENE_HNSW) they would lose cross-segment parallelism.
+        // native buffer; K=1 reduces to the single-segment path. This enables prefetch per segment,
+        // which the concurrent multi-thread path cannot (see buildSegment). Scoped to CAGRA_HNSW:
+        // sequential passes are free here because the GPU serializes builds anyway. For a CPU build
+        // (LUCENE_HNSW) they would lose cross-segment parallelism.
         boolean partitioned =
             config.algoToRun.equals(Codex.CAGRA_HNSW)
                 && !config.createIndexInMemory
@@ -331,13 +333,36 @@ public class LuceneCuvsBenchmarks {
                 && !config.enableTieredMerge
                 && config.flushFreq >= numVectorsToIndex;
 
+        if (config.cuvsNativeFlatBuffering && !partitioned) {
+          throw new IllegalArgumentException(
+              "cuvsNativeFlatBuffering requires a single-segment build: set flushFreq >= "
+                  + numVectorsToIndex
+                  + ", forceMerge<=0, enableTieredMerge=false, createIndexInMemory=false, and"
+                  + " algoToRun=CAGRA_HNSW (got flushFreq="
+                  + config.flushFreq
+                  + ", forceMerge="
+                  + config.forceMerge
+                  + ", enableTieredMerge="
+                  + config.enableTieredMerge
+                  + ", createIndexInMemory="
+                  + config.createIndexInMemory
+                  + ", algoToRun="
+                  + config.algoToRun
+                  + ")");
+        }
+
         if (config.partitionedOverlap && !partitioned) {
           log.info(
               "partitionedOverlap ignored: applies only to the partitioned CAGRA_HNSW build"
                   + " (needs flushFreq>=numDocs, no merge, on-disk index)");
         }
         long indexStartTime = System.currentTimeMillis();
-        if (partitioned) {
+        if (partitioned && config.cuvsNativeFlatBuffering) {
+          // Native flat buffering is only reachable through CagraHnswBulkIndexWriter now (see
+          // getCodec's guard); it owns its own IndexWriter/segment sizing per slice, so it
+          // subsumes both the sequential and overlapped partitioned-build cases below.
+          buildViaCagraHnswBulkIndexWriter(config, numVectorsToIndex, vectorProvider);
+        } else if (partitioned) {
           if (config.partitionedOverlap
               && config.numIndexThreads > 1
               && PrefetchingChunkedVectorProvider.supports(config.datasetFile)) {
@@ -638,10 +663,118 @@ public class LuceneCuvsBenchmarks {
   }
 
   /**
-   * Partitioned K-segment build: {@code K = numIndexThreads} contiguous slices, each built
-   * sequentially as one segment appended to the same directory. Sequential (not concurrent) so peak
-   * host memory is a single slice's native buffer, not K of them. The vector provider is streamed
-   * front-to-back across the passes, so a single forward-only prefetch reader spans all K.
+   * Builds the partitioned CAGRA_HNSW index via {@link CagraHnswBulkIndexWriter} when {@code
+   * cuvsNativeFlatBuffering} is enabled: {@code K = max(1, numIndexThreads)} contiguous slices,
+   * each a single native-flat-buffered segment (K=1 is the plain single-segment case).
+   * {@code CagraHnswBulkIndexWriter} owns the {@code IndexWriter}/segment sizing per slice, so this
+   * replaces {@link #buildPartitionedSegments} and {@link #buildPartitionedSegmentsOverlapped}
+   * for this configuration; those two remain for the {@code cuvsNativeFlatBuffering=false} case
+   * (sequential/overlapped partitioning without the native buffer, e.g. to isolate the
+   * partitioning benefit from the buffering benefit in a benchmark comparison).
+   *
+   * <p>The overlapped pipeline is only available for a real {@code .fbin} dataset ({@link
+   * CagraHnswBulkIndexWriter#indexFbin}); for any other {@link VectorProvider}-backed source
+   * (streaming, chunked, MapDB, in-memory-loaded) this always builds sequentially via {@link
+   * CagraHnswBulkIndexWriter#build(com.nvidia.cuvs.lucene.VectorSource,
+   * CagraHnswBulkIndexWriter.Config)}, using {@code vectorProvider} adapted to a {@link VectorSource}.
+   */
+  private static void buildViaCagraHnswBulkIndexWriter(
+      BenchmarkConfiguration config, int numVectorsToIndex, VectorProvider vectorProvider)
+      throws Exception {
+    AcceleratedHNSWParams.Builder paramsBuilder =
+        new AcceleratedHNSWParams.Builder()
+            .withStrategy(config.strategy)
+            .withWriterThreads(config.cuvsWriterThreads)
+            .withIntermediateGraphDegree(config.cagraIntermediateGraphDegree)
+            .withGraphDegree(config.cagraGraphDegree)
+            .withHNSWLayer(config.cagraHnswLayers)
+            .withMaxConn(config.hnswMaxConn)
+            .withBeamWidth(config.hnswBeamWidth)
+            .withCagraGraphBuildAlgo(
+                config.cagraGraphBuildAlgo != null
+                    ? config.cagraGraphBuildAlgo
+                    : CagraGraphBuildAlgo.AUTO_SELECT);
+
+    int k = Math.max(1, config.numIndexThreads);
+    boolean isFbin =
+        config.datasetFile.contains("fbin") && !config.datasetFile.contains("fvecs");
+    boolean overlap = config.partitionedOverlap && k > 1 && isFbin;
+    if (config.partitionedOverlap && k > 1 && !isFbin) {
+      log.info(
+          "partitionedOverlap ignored: CagraHnswBulkIndexWriter's overlapped build requires a real"
+              + " .fbin dataset (got {})",
+          config.datasetFile);
+    }
+
+    CagraHnswBulkIndexWriter.Config bulkConfig =
+        CagraHnswBulkIndexWriter.Config.builder()
+            .field(config.vectorColName, config.vectorDimension, EUCLIDEAN)
+            .graphBuild(paramsBuilder.build())
+            .segments(k, overlap)
+            .targetDirectory(Path.of(config.indexDirPath))
+            .build();
+
+    log.info(
+        "<<< Native flat buffering enabled: {} segment(s){} via CagraHnswBulkIndexWriter >>>",
+        k,
+        overlap ? ", overlapped" : ", sequential");
+
+    if (isFbin) {
+      CagraHnswBulkIndexWriter.indexFbin(
+          Path.of(config.datasetFile), bulkConfig, config.ingestChunkSizeMB);
+    } else {
+      CagraHnswBulkIndexWriter.build(
+          new VectorProviderSource(vectorProvider, config.vectorDimension, numVectorsToIndex),
+          bulkConfig);
+    }
+  }
+
+  /**
+   * Adapts a {@link VectorProvider} to {@link VectorSource} for {@link
+   * CagraHnswBulkIndexWriter#build}. {@code size} is the already-clamped vector count to index (not
+   * necessarily {@code vectorProvider.size()}); {@link #close()} is a no-op because {@code
+   * vectorProvider}'s lifecycle is owned by the caller (see the {@code finally} block in {@code
+   * main}), not by this adapter.
+   */
+  private static final class VectorProviderSource implements VectorSource {
+    private final VectorProvider vectorProvider;
+    private final int dimensions;
+    private final int size;
+
+    VectorProviderSource(VectorProvider vectorProvider, int dimensions, int size) {
+      this.vectorProvider = vectorProvider;
+      this.dimensions = dimensions;
+      this.size = size;
+    }
+
+    @Override
+    public int dimensions() {
+      return dimensions;
+    }
+
+    @Override
+    public int size() {
+      return size;
+    }
+
+    @Override
+    public void get(int index, float[] dst) throws IOException {
+      vectorProvider.get(index, dst);
+    }
+
+    @Override
+    public void close() {
+      // no-op: vectorProvider is closed by the caller, not owned by this adapter
+    }
+  }
+
+  /**
+   * Partitioned K-segment build without native flat buffering ({@code cuvsNativeFlatBuffering=
+   * false}): {@code K = numIndexThreads} contiguous slices, each built sequentially as one segment
+   * appended to the same directory, buffering each slice's vectors as a heap {@code
+   * List<float[]>}. Sequential (not concurrent) so segments stay separate without a merge. The
+   * vector provider is streamed front-to-back across the passes, so a single forward-only prefetch
+   * reader spans all K.
    */
   private static void buildPartitionedSegments(
       BenchmarkConfiguration config, int numVectorsToIndex, VectorProvider vectorProvider)
@@ -1159,19 +1292,16 @@ public class LuceneCuvsBenchmarks {
                       : CagraGraphBuildAlgo.AUTO_SELECT);
 
       // Native flat buffering is only wired for the CAGRA_HNSW writer and needs the whole dataset in
-      // one segment (the native host matrix is sized for the exact count). Fail fast on a
-      // multi-segment config rather than deep inside the writer.
+      // one segment (the native host matrix is sized for the exact count). AcceleratedHNSWParams no
+      // longer exposes a public way to size that buffer: only com.nvidia.cuvs.lucene.
+      // CagraHnswBulkIndexWriter can, since it is the sole caller that owns the IndexWriter and can
+      // guarantee the single-segment/no-merge invariant the buffer requires. main() routes
+      // cuvsNativeFlatBuffering through buildViaCagraHnswBulkIndexWriter before getCodec is ever
+      // reached for that case; this is a safety net against a routing bug, not the normal path.
       if (config.cuvsNativeFlatBuffering && config.algoToRun.equals(Codex.CAGRA_HNSW)) {
-        if (config.flushFreq < numVectorsToIndex) {
-          throw new IllegalArgumentException(
-              "cuvsNativeFlatBuffering requires a single-segment build: set flushFreq >= "
-                  + numVectorsToIndex
-                  + " so all vectors land in one segment (got flushFreq="
-                  + config.flushFreq
-                  + ")");
-        }
-        log.info("<<< Native flat buffering enabled: numInputVectors={} >>>", numVectorsToIndex);
-        paramsBuilder.withNumInputVectors(numVectorsToIndex);
+        throw new IllegalStateException(
+            "cuvsNativeFlatBuffering must be handled by CagraHnswBulkIndexWriter, not getCodec(); this"
+                + " call site should have routed through buildViaCagraHnswBulkIndexWriter");
       }
 
       AcceleratedHNSWParams params = paramsBuilder.build();
